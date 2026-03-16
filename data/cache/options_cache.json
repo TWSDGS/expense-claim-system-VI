@@ -1,0 +1,118 @@
+[
+  {
+    "option_type": "department",
+    "option_value": "化安處"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "李政憲"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "陳櫻香"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "林玫君"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "陳佳君"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "陳志信"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "葉文澤"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "林佾萱"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "吳兆瑋"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "方澤沛"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "林以辰"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "黃正君"
+  },
+  {
+    "option_type": "employee_name",
+    "option_value": "施品甄"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "96006"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "96010"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "96021"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "96019"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "40044"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "40021"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "10103"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "10202"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "10401"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "10503"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "10602"
+  },
+  {
+    "option_type": "employee_no",
+    "option_value": "11201"
+  },
+  {
+    "option_type": "payment_mode",
+    "option_value": "employee"
+  },
+  {
+    "option_type": "payment_mode",
+    "option_value": "company"
+  },
+  {
+    "option_type": "payee_type",
+    "option_value": "employee"
+  },
+  {
+    "option_type": "payee_type",
+    "option_value": "vendor"
+  }
+]
