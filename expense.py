@@ -41,6 +41,7 @@ from sync_engine import build_master_dataframe, sync_pending_events
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
+EXPENSE_ATTACHMENTS_ROOT_URL = "https://drive.google.com/drive/folders/1Hh6JFu62PPVU6rCcQ5bV6NEh0VsGaEcv?usp=sharing"
 
 
 EXPENSE_WIDGET_KEYS = {
@@ -1522,15 +1523,23 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
             cfm1, cfm2 = st.columns(2)
             if cfm1.button("確認移除", key=f"{key_prefix}_hard_delete_yes_{record_id}", type="primary", disabled=not can_hard_delete(actor), use_container_width=True):
                 try:
+                    # 1. 先備份到本地 archive
                     archive_deleted_record(rec, system_type="expense", actor_email=actor.email)
+                    # 2. 從本地草稿中移除
                     remove_local_expense_draft(owner_email, record_id, mark_deleted=False)
+                    # 3. 加入同步隊列並嘗試同步
                     ok, msg = _queue_and_try_sync_expense(actor, 'expense_hard_delete', {'record_id': record_id, 'user_email': owner_email, 'system_type': 'expense'})
+                    # 4. 清除確認狀態
                     st.session_state.pop(confirm_key, None)
+                    # 5. 強制刷新快取與 master dataframe
                     refresh_runtime_cache(actor)
+                    _invalidate_expense_master(actor)
+                    _load_expense_master(actor, force_refresh=True)
+                    
                     if ok:
-                        st.success(f"{record_id} 已永久移除。")
+                        st.success(f"{record_id} 已從雲端移除。")
                     else:
-                        st.warning(f"{record_id} 已加入待同步永久移除：{msg or '請稍後重新同步'}")
+                        st.warning(f"{record_id} 已從本地移除，雲端移除已加入待同步：{msg or '請稍後重新同步'}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"永久移除失敗：{e}")
