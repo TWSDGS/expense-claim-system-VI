@@ -649,9 +649,9 @@ def render_form(actor: Actor) -> None:
     employee_options = [str(r.get("employee_no", "")).strip() for r in users_rows if str(r.get("employee_no", "")).strip()] or [actor.employee_no]
     project_options = _option_candidates(grouped, "plan_code", "project_id") or [""]
     budget_options = _option_candidates(grouped, "budget_source") or [""]
-    departure_options = ["台南", "其他"]
+    departure_options = ["台南", "台中", "其他"]
     destination_options = ["台北", "新北", "新竹", "台中", "台南", "高雄", "其他"]
-    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "飛機", "派車", "其他"]
+    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "台鐵","飛機", "派車", "其他"]
 
     details_rows = form.get("details") or []
     if not isinstance(details_rows, list) or not details_rows:
@@ -713,7 +713,7 @@ def render_form(actor: Actor) -> None:
                 "起訖地點": st.column_config.TextColumn("起訖地點"),
                 "車別": st.column_config.SelectboxColumn(
                     "車別",
-                    options=["", "高鐵", "台鐵", "客運", "捷運", "公車", "計程車", "私車公用", "公務車", "飛機", "船舶", "其他"],
+                    options=["", "高鐵", "台鐵", "客運", "捷運", "公車", "計程車", "私車公用", "公務車", "飛機", "船舶", "其他", "停車費", "過路費"],
                     required=False,
                 ),
                 "交通費": st.column_config.NumberColumn("交通費", min_value=0, step=1),
