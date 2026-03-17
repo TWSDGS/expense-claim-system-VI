@@ -38,6 +38,11 @@ const WEBAPP_API_CONFIG = {
   },
 };
 
+const DRIVE_ROOT_FOLDER_IDS = {
+  expense: '1fCrjdY48SiXJ2CHBkwrVFkO1hana_sh1',
+  travel: '1Nuva1xe__N6CRpRUcx4Fi7_bwXwhN_Zw',
+};
+
 const RECORD_META_COLUMNS = [
   ['version', '版本'],
   ['last_event_id', '最後事件ID'],
@@ -300,8 +305,7 @@ function handleUploadDriveFile_(body) {
   const bytes = Utilities.base64Decode(contentBase64);
   const folder = getAttachmentCategoryFolder_(system, category);
   const safeName = buildSafeDriveFilename_(recordId, filename);
-  const blob = Utilities.newBlob(bytes, mimeType, safeName);
-  const file = folder.createFile(blob);
+  const file = folder.createFile(bytes, safeName, mimeType);
 
   const data = {
     drive_file_id: file.getId(),
@@ -549,19 +553,9 @@ function processRecordWrite_(body, finalStatus) {
 }
 
 function getDriveRootFolder_(system) {
-  const props = PropertiesService.getScriptProperties();
-  const propKey = 'DRIVE_ROOT_' + system.formType.toUpperCase();
-  const existingId = String(props.getProperty(propKey) || '').trim();
-  if (existingId) {
-    try {
-      return DriveApp.getFolderById(existingId);
-    } catch (e) {}
-  }
-
-  const rootName = system.formType === 'expense' ? 'expense-attachments' : 'travel-attachments';
-  const folder = findOrCreateFolderByName_(DriveApp.getRootFolder(), rootName);
-  props.setProperty(propKey, folder.getId());
-  return folder;
+  const folderId = DRIVE_ROOT_FOLDER_IDS[system.formType];
+  if (!folderId) throw new Error('Drive root folder id not configured for ' + system.formType);
+  return DriveApp.getFolderById(folderId);
 }
 
 function getAttachmentCategoryFolder_(system, category) {
