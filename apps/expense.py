@@ -692,6 +692,7 @@ def default_form(actor: Actor, defaults: Dict[str, Any]) -> Dict[str, Any]:
         "note_public": defaults.get("default_note_public", "憑證正本請黏貼於此頁下方；會議請填寫出席人員於用途說明"),
         "remarks_internal": "",
         "owner_name": actor.name,
+        "filler_name": actor.name,  # 初始填表人
         "user_email": actor.email,
         "attachment_files": [],
         "signature_file": {},
@@ -730,6 +731,9 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     st.session_state.setdefault(keys["remarks_internal"], str(d.get("remarks_internal", "")))
     plan_opts = option_values(grouped_options, "plan_code")
     plan_val = str(d.get("plan_code", "")).strip()
+    # If plan_val is not in options but has a value, add it to preserve it
+    if plan_val and plan_val not in plan_opts:
+        plan_opts = [plan_val] + plan_opts
     st.session_state.setdefault(keys["plan_code"], plan_val if plan_val in plan_opts else "其他")
     st.session_state.setdefault(keys["plan_code_other"], "" if plan_val in plan_opts else plan_val)
     actor_name = str(st.session_state.get("actor_name", "")).strip()
@@ -745,6 +749,14 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     
     emp_name = str(d.get("employee_name", "")).strip() or actor_name
     emp_no = str(d.get("employee_no", "")).strip() or actor_employee_no
+    
+    # If emp_name is not in options but has a value, add it to preserve it
+    if emp_name and emp_name not in emp_name_opts:
+        emp_name_opts = [emp_name] + emp_name_opts
+    
+    # If emp_no is not in options but has a value, add it to preserve it
+    if emp_no and emp_no not in emp_no_opts:
+        emp_no_opts = [emp_no] + emp_no_opts
     
     first_emp_name = emp_name_opts[0] if emp_name_opts else ""
     first_emp_no = emp_no_opts[0] if emp_no_opts else ""
@@ -816,6 +828,7 @@ def load_record_into_form(record: Dict[str, Any], actor: Actor, grouped_options:
         "note_public": record.get("note_public", ""),
         "remarks_internal": record.get("remarks_internal", ""),
         "owner_name": record.get("owner_name", actor.name),
+        "filler_name": record.get("filler_name") or record.get("owner_name") or actor.name, # 載入時保留原始填表人
         "user_email": record.get("user_email", actor.email),
         "attachment_files": record.get("attachment_files", []),
         "signature_file": record.get("signature_file", {}),
@@ -831,6 +844,7 @@ def copy_record_into_form(record: Dict[str, Any], actor: Actor, grouped_options:
     copied["record_id"] = ""
     copied["form_date"] = date.today().isoformat()
     copied["owner_name"] = actor.name
+    copied["filler_name"] = actor.name # 複製時，新表單的填表人為當前操作者
     copied["user_email"] = actor.email
     for k in ["status", "created_at", "updated_at", "modified_at", "submitted_at", "deleted_at", "voided_at"]:
         copied.pop(k, None)
@@ -990,6 +1004,7 @@ def _current_payload(actor: Actor, form_data: Dict[str, Any], grouped_options: D
         "note_public": str(st.session_state.get(keys["note_public"], "")),
         "remarks_internal": str(st.session_state.get(keys["remarks_internal"], "")),
         "owner_name": actor.name,
+        "filler_name": form_data.get("filler_name") or actor.name, # 儲存時保留原始填表人
         "user_email": actor.email,
         "attachment_files": form_data.get("attachment_files", []),
         "signature_file": form_data.get("signature_file", {}),
@@ -1298,7 +1313,7 @@ def _payment_target_text(rec: Dict[str, Any]) -> str:
 
 
 def _owner_text(rec: Dict[str, Any]) -> str:
-    return str(rec.get("owner_name") or rec.get("employee_name") or rec.get("created_by_name") or "").strip()
+    return str(rec.get("filler_name") or rec.get("owner_name") or rec.get("employee_name") or rec.get("created_by_name") or "").strip()
 
 
 def _record_to_pdf_payload(rec: Dict[str, Any], actor: Actor) -> Dict[str, Any]:
@@ -1327,6 +1342,7 @@ def _record_to_pdf_payload(rec: Dict[str, Any], actor: Actor) -> Dict[str, Any]:
     payload["amount_total"] = safe_int(payload.get("amount_total"))
     payload["amount_untaxed"] = safe_int(payload.get("amount_untaxed"))
     payload["owner_name"] = payload.get("owner_name") or actor.name
+    payload["filler_name"] = payload.get("filler_name") or payload.get("owner_name") or actor.name
     payload["user_email"] = payload.get("user_email") or actor.email
     return payload
 
