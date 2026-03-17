@@ -41,7 +41,6 @@ from sync_engine import build_master_dataframe, sync_pending_events
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
-EXPENSE_ATTACHMENTS_ROOT_URL = "https://drive.google.com/drive/folders/1Hh6JFu62PPVU6rCcQ5bV6NEh0VsGaEcv?usp=sharing"
 
 
 EXPENSE_WIDGET_KEYS = {
@@ -373,49 +372,6 @@ def _invalidate_expense_master(actor: Optional[Actor]) -> None:
         st.session_state.pop(suffix, None)
 
 
-def _expense_pending_items(owner_email: str) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    for item in load_pending_sync(owner_email) or []:
-        payload = dict(item.get("payload") or {})
-        system_type = str(payload.get("system_type") or ("travel" if "travel" in str(item.get("operation", "")).lower() else "expense")).lower()
-        if system_type == "expense":
-            items.append(item)
-    return items
-
-
-def _expense_raw_pending_count(owner_email: str) -> int:
-    rows = []
-    for item in _expense_pending_items(owner_email):
-        payload = dict(item.get("payload") or {})
-        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
-        needs_sync = bool(payload.get("needs_sync", True))
-        if needs_sync and sync_status in {"pending", "failed", "conflict"}:
-            rows.append(item)
-    return len(rows)
-
-
-def _cleanup_stale_expense_pending(actor: Actor) -> int:
-    report = st.session_state.get("expense_sync_report", {}) or {}
-    raw_pending = _expense_raw_pending_count(actor.email)
-    report_pending = int(report.get("pending_count", 0) or 0)
-    cloud_online = bool(report.get("cloud_online", False))
-    if not cloud_online or raw_pending <= report_pending:
-        return 0
-    removed = 0
-    for item in _expense_pending_items(actor.email):
-        payload = dict(item.get("payload") or {})
-        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
-        if sync_status == "conflict":
-            continue
-        event_id = str(item.get("event_id") or payload.get("event_id") or "").strip()
-        record_id = str(payload.get("record_id") or "").strip()
-        if event_id:
-            removed += remove_pending_sync_item(actor.email, event_id=event_id, system_type="expense")
-        elif record_id:
-            removed += remove_pending_sync_item(actor.email, record_id=record_id, system_type="expense")
-    return removed
-
-
 def _queue_and_try_sync_expense(actor: Actor, operation: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
     payload = dict(payload or {})
     payload['system_type'] = 'expense'
@@ -510,6 +466,53 @@ def _expense_restore_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+
+def _expense_pending_items(owner_email: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for item in load_pending_sync(owner_email) or []:
+        payload = dict(item.get("payload") or {})
+        system_type = str(payload.get("system_type") or ("travel" if "travel" in str(item.get("operation", "")).lower() else "expense")).lower()
+        if system_type == "expense":
+            items.append(item)
+    return items
+
+
+
+def _expense_raw_pending_count(owner_email: str) -> int:
+    rows = []
+    for item in _expense_pending_items(owner_email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        needs_sync = bool(payload.get("needs_sync", True))
+        if needs_sync and sync_status in {"pending", "failed", "conflict"}:
+            rows.append(item)
+    return len(rows)
+
+
+
+def _cleanup_stale_expense_pending(actor: Actor) -> int:
+    report = st.session_state.get("expense_sync_report", {}) or {}
+    raw_pending = _expense_raw_pending_count(actor.email)
+    report_pending = int(report.get("pending_count", 0) or 0)
+    cloud_online = bool(report.get("cloud_online", False))
+    if not cloud_online or raw_pending <= report_pending:
+        return 0
+    removed = 0
+    for item in _expense_pending_items(actor.email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        if sync_status == "conflict":
+            continue
+        event_id = str(item.get("event_id") or payload.get("event_id") or "").strip()
+        record_id = str(payload.get("record_id") or "").strip()
+        if event_id:
+            removed += remove_pending_sync_item(actor.email, event_id=event_id, system_type="expense")
+        elif record_id:
+            removed += remove_pending_sync_item(actor.email, record_id=record_id, system_type="expense")
+    return removed
+
+
+
 def _render_deleted_archive_restore_expense(actor: Actor) -> None:
     if str(actor.role).lower() != "admin":
         return
@@ -551,18 +554,28 @@ def render_sync_status_sidebar_expense(current_user_email: str) -> None:
     if not current_user_email:
         return
     actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
-    pending_count = count_pending_sync(current_user_email, system_type="expense")
     st.sidebar.markdown("---")
     st.sidebar.subheader("雲端同步狀態")
-    cloud_online = st.session_state.get("cloud_online_expense", True)
+
+    _, report = _load_expense_master(actor, force_refresh=False)
+    raw_pending_count = _expense_raw_pending_count(current_user_email)
+    report_pending_count = int(report.get("pending_count", 0) or 0)
+    stale_queue_detected = raw_pending_count != report_pending_count
+
+    cloud_online = bool(report.get("cloud_online", st.session_state.get("cloud_online_expense", True)))
+    st.session_state["cloud_online_expense"] = cloud_online
     if cloud_online:
         st.sidebar.success("雲端：已連線")
     else:
         st.sidebar.error("雲端：未連線")
-    if pending_count > 0:
-        st.sidebar.warning(f"你有 {pending_count} 筆支出資料尚未同步到雲端")
+
+    if report_pending_count > 0:
+        st.sidebar.warning(f"你有 {report_pending_count} 筆支出資料尚未同步到雲端")
     else:
         st.sidebar.success("你的支出資料皆已同步")
+
+    if stale_queue_detected:
+        st.sidebar.warning("偵測到本機待同步殘留，已建議清理")
 
     cloud_url = _get_cloud_excel_url()
     if cloud_url:
@@ -584,26 +597,41 @@ def render_sync_status_sidebar_expense(current_user_email: str) -> None:
 
     _render_deleted_archive_restore_expense(actor)
 
-    report = st.session_state.get('expense_sync_report', {}) or {}
-    st.sidebar.caption(f"master={report.get('master_count', 0)}｜cloud={report.get('cloud_count', 0)}｜pending={report.get('pending_count', 0)}")
-    if report.get('cloud_count', 0) != report.get('master_count', 0) and report.get('pending_count', 0) == 0:
+    st.sidebar.caption(f"master={report.get('master_count', 0)}｜cloud={report.get('cloud_count', 0)}｜pending={report_pending_count}")
+    if report.get('cloud_count', 0) != report.get('master_count', 0) and report_pending_count == 0:
         st.sidebar.warning('偵測到雲端與前端筆數不一致，建議重新同步或重新整理。')
 
     if st.sidebar.button("立即同步支出資料", key="sync_expense_now_btn", use_container_width=True):
         try:
-            result = sync_pending_events('expense', actor, get_api())
-            _invalidate_expense_master(actor)
-            _load_expense_master(actor, force_refresh=True)
+            sync_actor = get_current_actor() or Actor(name='', email=current_user_email, role='user')
+            result = sync_pending_events('expense', sync_actor, get_api())
+            _invalidate_expense_master(sync_actor)
+            _, report = _load_expense_master(sync_actor, force_refresh=True)
             st.session_state['cloud_online_expense'] = result.get('failed', 0) == 0
-            if result.get('synced', 0) == 0 and result.get('failed', 0) == 0:
-                st.sidebar.info("目前沒有待同步的支出資料。")
+            cleanup_removed = 0
+            if result.get('failed', 0) == 0 and result.get('conflicts', 0) == 0:
+                cleanup_removed = _cleanup_stale_expense_pending(sync_actor)
+                if cleanup_removed:
+                    _invalidate_expense_master(sync_actor)
+                    _, report = _load_expense_master(sync_actor, force_refresh=True)
+            if result.get('synced', 0) == 0 and result.get('failed', 0) == 0 and report.get('pending_count', 0) == 0:
+                msg = "目前沒有待同步的支出資料。"
+                if cleanup_removed:
+                    msg += f" 已清理 {cleanup_removed} 筆本機待同步殘留。"
+                st.sidebar.info(msg)
             elif result.get('failed', 0) == 0:
-                st.sidebar.success(f"同步完成：{result.get('synced', 0)} 筆")
+                msg = f"同步完成：{result.get('synced', 0)} 筆"
+                if cleanup_removed:
+                    msg += f"；另已清理 {cleanup_removed} 筆本機待同步殘留"
+                st.sidebar.success(msg)
             else:
                 st.sidebar.warning(f"同步完成：成功 {result.get('synced', 0)} 筆，失敗 {result.get('failed', 0)} 筆")
         except Exception as e:
             st.session_state['cloud_online_expense'] = False
             st.sidebar.error(f"同步失敗：{e}")
+
+
+
 
 def render_top_sync_notice_expense(current_user_email: str) -> None:
     if not current_user_email:
@@ -615,6 +643,7 @@ def render_top_sync_notice_expense(current_user_email: str) -> None:
         st.info(f"提醒：你有 {pending_count} 筆支出資料尚未同步到雲端。")
     elif _expense_raw_pending_count(current_user_email) != pending_count:
         st.info("提醒：偵測到本機待同步殘留，已建議清理。")
+
 
 
 def option_values(grouped: Dict[str, List[str]], option_type: str, include_other: bool = True) -> List[str]:
@@ -1416,6 +1445,7 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
         action_cols = row_cols[10].columns(6)
         pdf_payload = _record_to_pdf_payload(rec, actor)
         pdf_bytes = _prepare_pdf_bytes(pdf_payload)
+        owner_email = str(rec.get("user_email") or actor.email or "").strip().lower()
         if action_cols[0].button("編輯", key=f"{key_prefix}_edit_{record_id}", use_container_width=True):
             load_record_into_form(rec, actor, grouped_options)
             st.session_state["expense_page"] = "new"
@@ -1427,65 +1457,52 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
         action_cols[2].download_button("下載", data=pdf_bytes, file_name=f"支出報帳_{record_id or 'preview'}.pdf", mime="application/pdf", key=f"{key_prefix}_download_{record_id}", use_container_width=True)
         submit_disabled = status_text in {"submitted", "void"}
         if action_cols[3].button("送出", key=f"{key_prefix}_submit_{record_id}", disabled=submit_disabled, use_container_width=True):
-            try:
-                result = api.record_submit(actor=actor, payload=pdf_payload)
-                final_id = result.get("data", {}).get("record_id", "") or record_id
-                st.success(f"{final_id} 已送出。")
-                st.rerun()
-            except Exception as e:
-                st.error(f"送出失敗：{e}")
+            rec["status"] = "submitted"
+            upsert_local_expense_draft(owner_email, rec)
+            ok, msg = _queue_and_try_sync_expense(actor, 'expense_submit', rec)
+            refresh_runtime_cache(actor)
+            if ok:
+                st.success(f"{record_id} 已送出。")
+            else:
+                st.warning(f"{record_id} 已加入待同步送出：{msg or '請稍後重新同步'}")
+            st.rerun()
         action_label = "作廢" if status_text in {"submitted", "void"} else "刪除"
         if action_cols[4].button(action_label, key=f"{key_prefix}_void_{record_id}", disabled=not can_delete_record(actor, rec), use_container_width=True):
-            try:
-                owner_email = str(rec.get("user_email") or actor.email or "").strip().lower()
-                if action_label == "作廢":
-                    rec["status"] = "void"
-                    upsert_local_expense_draft(owner_email, rec)
-                    ok, msg = _queue_and_try_sync_expense(actor, "expense_soft_delete", rec)
-                    if ok:
-                        st.success(f"{record_id} 已作廢。")
-                    else:
-                        st.warning(f"{record_id} 已加入待同步作廢：{msg or '請稍後重新同步'}")
-                else:
-                    rec["status"] = "deleted"
-                    upsert_local_expense_draft(owner_email, rec)
-                    ok, msg = _queue_and_try_sync_expense(actor, "expense_soft_delete", rec)
-                    if ok:
-                        st.success(f"{record_id} 已刪除。")
-                    else:
-                        st.warning(f"{record_id} 已加入待同步刪除：{msg or '請稍後重新同步'}")
-                refresh_runtime_cache(actor)
-                st.rerun()
-            except Exception as e:
-                st.error(f"{action_label}失敗：{e}")
-
-        confirm_key = f"{key_prefix}_confirm_hard_delete_{record_id}"
-        if can_hard_delete(actor):
-            if action_cols[5].button("移除", key=f"{key_prefix}_hard_delete_{record_id}", use_container_width=True):
-                st.session_state[confirm_key] = True
-
-            if st.session_state.get(confirm_key):
-                st.warning(f"你確定要永久移除 {record_id} 嗎？此動作會先備援到 deleted archive。")
-                c1, c2 = st.columns(2)
-                if c1.button("確認移除", key=f"{confirm_key}_yes", use_container_width=True):
-                    try:
-                        archive_deleted_record(rec, system_type="expense", actor_email=actor.email)
-                        owner_email = str(rec.get("user_email") or actor.email or "").strip().lower()
-                        remove_local_expense_draft(owner_email, record_id, mark_deleted=False)
-                        ok, msg = _queue_and_try_sync_expense(actor, "expense_hard_delete", {"record_id": record_id, "user_email": owner_email})
-                        st.session_state.pop(confirm_key, None)
-                        refresh_runtime_cache(actor)
-                        if ok:
-                            st.success(f"{record_id} 已永久移除。")
-                        else:
-                            st.warning(f"{record_id} 已加入待同步永久移除：{msg or '請稍後重新同步'}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"永久移除失敗：{e}")
-                if c2.button("取消移除", key=f"{confirm_key}_no", use_container_width=True):
+            rec["status"] = "void" if action_label == "作廢" else "deleted"
+            upsert_local_expense_draft(owner_email, rec)
+            ok, msg = _queue_and_try_sync_expense(actor, 'expense_soft_delete', rec)
+            refresh_runtime_cache(actor)
+            if ok:
+                st.success(f"{record_id} 已{action_label}。")
+            else:
+                st.warning(f"{record_id} 已加入待同步{action_label}：{msg or '請稍後重新同步'}")
+            st.rerun()
+        confirm_key = f"expense_hard_delete_confirm::{key_prefix}::{record_id}"
+        if st.session_state.get(confirm_key):
+            st.warning("此操作會永久移除資料，且已先備份到 deleted archive。")
+            cfm1, cfm2 = st.columns(2)
+            if cfm1.button("確認移除", key=f"{key_prefix}_hard_delete_yes_{record_id}", type="primary", disabled=not can_hard_delete(actor), use_container_width=True):
+                try:
+                    archive_deleted_record(rec, system_type="expense", actor_email=actor.email)
+                    remove_local_expense_draft(owner_email, record_id, mark_deleted=False)
+                    ok, msg = _queue_and_try_sync_expense(actor, 'expense_hard_delete', {'record_id': record_id, 'user_email': owner_email, 'system_type': 'expense'})
                     st.session_state.pop(confirm_key, None)
-                    st.info("已取消移除。")
+                    refresh_runtime_cache(actor)
+                    if ok:
+                        st.success(f"{record_id} 已永久移除。")
+                    else:
+                        st.warning(f"{record_id} 已加入待同步永久移除：{msg or '請稍後重新同步'}")
                     st.rerun()
+                except Exception as e:
+                    st.error(f"永久移除失敗：{e}")
+            if cfm2.button("取消移除", key=f"{key_prefix}_hard_delete_no_{record_id}", use_container_width=True):
+                st.session_state.pop(confirm_key, None)
+                st.info("已取消移除。")
+                st.rerun()
+        elif action_cols[5].button("移除單筆資料", key=f"{key_prefix}_hard_delete_{record_id}", disabled=not can_hard_delete(actor), use_container_width=True):
+            st.session_state[confirm_key] = True
+            st.rerun()
+
 
 
 def render_drafts_page(grouped_options: Dict[str, List[str]], defaults: Dict[str, Any]) -> None:
