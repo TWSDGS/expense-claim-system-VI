@@ -69,6 +69,10 @@ def clear_user_runtime_state() -> None:
     dynamic_prefixes = [
         "expense_defaults_",
         "travel_defaults_",
+        "expense_form_data::",  # Per-user form data key
+        "travel_form_data::",   # Per-user travel form data key
+        "expense_editing_record_id::",  # Per-user editing record ID
+        "travel_editing_record_id::",   # Per-user travel editing record ID
     ]
 
     for k in list(st.session_state.keys()):
@@ -86,7 +90,12 @@ def store_actor(actor: Actor) -> None:
     new_email = str(actor.email).strip().lower()
 
     if prev_email and prev_email != new_email:
+        # Clear all user-specific runtime state when switching users
         clear_user_runtime_state()
+        # Also clear per-user keys from previous email
+        for k in list(st.session_state.keys()):
+            if prev_email in k:
+                st.session_state.pop(k, None)
 
     st.session_state["actor_name"] = actor.name
     st.session_state["actor_email"] = actor.email
@@ -118,7 +127,6 @@ def clear_actor_session_state():
 def render_refresh_cloud_settings_button():
     st.markdown("### 雲端設定同步")
     st.caption("重新抓取雲端的使用者、預設值與選項設定，並更新本機快取。")
-    render_refresh_cloud_settings_button()
 
     if st.button("重新同步雲端設定", key="refresh_cloud_settings_btn", use_container_width=True):
         clear_global_cache_files()
