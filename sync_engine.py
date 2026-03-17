@@ -151,7 +151,7 @@ def build_master_dataframe(
     local_df = _normalize_df(list(local_rows or [])) if local_rows is not None else pd.DataFrame()
 
     try:
-        pending_all = list(cu.load_pending_sync())
+        pending_all = list(cu.load_pending_sync(owner_email))
     except Exception:
         pending_all = []
 
@@ -198,7 +198,7 @@ def sync_pending_events(entity_type: str, actor: Any, api: Any) -> Dict[str, Any
     role = str(getattr(actor, "role", "user") or "user")
 
     try:
-        pending_all = list(cu.load_pending_sync())
+        pending_all = list(cu.load_pending_sync(owner_email))
     except Exception:
         pending_all = []
 
@@ -239,8 +239,8 @@ def sync_pending_events(entity_type: str, actor: Any, api: Any) -> Dict[str, Any
                 api.record_save_draft(actor=actor, payload=payload)
 
             try:
-                cu.mark_sync_success(event_id)
-                cu.remove_pending_sync_item(event_id)
+                cu.mark_sync_success(owner_email, entity_type, str(payload.get('record_id') or ''))
+                cu.remove_pending_sync_item(owner_email, event_id=str(event_id or ''), record_id=str(payload.get('record_id') or ''), system_type=entity_type)
             except Exception:
                 pass
             synced += 1
@@ -254,14 +254,22 @@ def sync_pending_events(entity_type: str, actor: Any, api: Any) -> Dict[str, Any
                     "message": msg,
                 })
                 try:
-                    cu.mark_sync_failed(event_id, msg)
-                    cu.update_pending_sync_item(event_id, {"sync_status": "conflict", "sync_message": msg})
+                    cu.mark_sync_failed(owner_email, entity_type, str(payload.get('record_id') or ''), msg)
+                    current_item = dict(item)
+                    current_payload = dict(current_item.get('payload') or {})
+                    current_payload['sync_status'] = 'conflict'
+                    current_payload['sync_message'] = msg
+                    current_payload['needs_sync'] = True
+                    current_item['payload'] = current_payload
+                    current_item['last_error'] = msg
+                    current_item['retry_count'] = int(current_item.get('retry_count') or 0) + 1
+                    cu.update_pending_sync_item(owner_email, str(event_id or ''), current_item)
                 except Exception:
                     pass
             else:
                 failed += 1
                 try:
-                    cu.mark_sync_failed(event_id, msg)
+                    cu.mark_sync_failed(owner_email, entity_type, str(payload.get('record_id') or ''), msg)
                 except Exception:
                     pass
 
@@ -270,4 +278,5 @@ def sync_pending_events(entity_type: str, actor: Any, api: Any) -> Dict[str, Any
         "failed": failed,
         "conflicts": conflicts,
         "conflict_records": conflict_records,
+        "remaining": max(0, len(relevant) - synced),
     }
