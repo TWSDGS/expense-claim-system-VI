@@ -59,7 +59,7 @@ const SHEET_SCHEMAS = {
     ['vendor_enabled', '逕付廠商_是否勾選'], ['vendor_name', '逕付廠商'], ['vendor_address', '地址'], ['vendor_payee_name', '收款人'],
     ['receipt_count', '憑證編號'], ['amount_untaxed', '未稅金額'], ['tax_mode', '稅額方式'], ['tax_amount', '稅額'], ['amount_total', '金額'],
     ['handler_name', '經辦人'], ['project_manager_name', '計畫主管'], ['department_manager_name', '部門主管'], ['accountant_name', '會計'],
-    ['department', '部門'], ['note_public', '備註'], ['remarks_internal', '內部備註'], ['attachments', '附件'], ['signature_file', '數位簽名檔'],
+    ['department', '部門'], ['note_public', '備註'], ['remarks_internal', '內部備註'],
     ['owner_name', '擁有人'], ['user_email', '使用者Email'], ['actor_role', '角色'], ['source_system', '來源系統'],
     ['created_at', '建立時間'], ['created_by', '建立者'], ['updated_at', '更新時間'], ['updated_by', '更新者'], ['submitted_at', '送出時間'], ['submitted_by', '送出者'],
     ['is_deleted', '是否刪除'], ['deleted_at', '刪除時間'], ['deleted_by', '刪除者'],
@@ -74,7 +74,7 @@ const SHEET_SCHEMAS = {
     ['vendor_enabled', '逕付廠商_是否勾選'], ['vendor_name', '逕付廠商'], ['vendor_address', '地址'], ['vendor_payee_name', '收款人'],
     ['receipt_count', '憑證編號'], ['amount_untaxed', '未稅金額'], ['tax_mode', '稅額方式'], ['tax_amount', '稅額'], ['amount_total', '金額'],
     ['handler_name', '經辦人'], ['project_manager_name', '計畫主管'], ['department_manager_name', '部門主管'], ['accountant_name', '會計'],
-    ['department', '部門'], ['note_public', '備註'], ['remarks_internal', '內部備註'], ['attachments', '附件'], ['signature_file', '數位簽名檔'],
+    ['department', '部門'], ['note_public', '備註'], ['remarks_internal', '內部備註'],
     ['owner_name', '擁有人'], ['user_email', '使用者Email'], ['actor_role', '角色'], ['source_system', '來源系統'],
     ['created_at', '建立時間'], ['created_by', '建立者'], ['updated_at', '更新時間'], ['updated_by', '更新者'], ['submitted_at', '送出時間'], ['submitted_by', '送出者'],
     ['is_deleted', '是否刪除'], ['deleted_at', '刪除時間'], ['deleted_by', '刪除者'],
@@ -270,9 +270,6 @@ function doPost(e) {
       case 'record_soft_delete': result = handleRecordSoftDelete_(body); break;
       case 'record_hard_delete': result = handleRecordHardDelete_(body); break;
       case 'record_restore': result = handleRecordRestore_(body); break;
-      case 'upload_drive_file': result = handleUploadDriveFile_(body); break;
-      case 'delete_drive_file': result = handleDeleteDriveFile_(body); break;
-      case 'get_drive_file_content': result = handleGetDriveFileContent_(body); break;
       default: result = err_('unknown action: ' + action, 'UNKNOWN_ACTION');
     }
     return jsonOutput_(result);
@@ -577,8 +574,6 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
     clean.tax_amount = Math.round(Number(clean.tax_amount || 0));
     clean.amount_total = Math.round(Number(clean.amount_total || 0));
     clean.receipt_count = Math.round(Number(clean.receipt_count || 0));
-    clean.attachments = normalizeJsonText_(clean.attachments || clean.attachment_files || []);
-    clean.signature_file = normalizeJsonText_(clean.signature_file || '');
     clean.handler_name = clean.handler_name || '';
     clean.project_manager_name = clean.project_manager_name || '';
     clean.department_manager_name = clean.department_manager_name || '';
@@ -929,101 +924,6 @@ function normalizeEmail_(email) { return String(email || '').trim().toLowerCase(
 function truthy_(v) { if (v === true) return true; const s = String(v || '').trim().toLowerCase(); return ['true', '1', 'yes', 'y'].indexOf(s) >= 0; }
 function num_(v) { const n = Number(v); return isNaN(n) ? 999999 : n; }
 function nowIso_() { return Utilities.formatDate(new Date(), WEBAPP_API_CONFIG.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ss"); }
-
-
-function handleUploadDriveFile_(body) {
-  const system = requireSystem_(body.system);
-  ensureSystemInfra_(system);
-  const actor = normalizeActor_(body.actor || {});
-  const payload = body.payload || {};
-  const filename = String(payload.filename || '').trim();
-  const contentBase64 = String(payload.content_base64 || '').trim();
-  const mimeType = String(payload.mime_type || 'application/octet-stream').trim();
-  const category = String(payload.category || 'attachment').trim();
-  const recordId = String(payload.record_id || '').trim();
-  const ownerEmail = normalizeEmail_(payload.owner_email || actor.email || '');
-  if (!filename || !contentBase64) return err_('filename and content_base64 are required', 'VALIDATION_ERROR');
-  const bytes = Utilities.base64Decode(contentBase64);
-  const folder = ensureDriveStorageFolder_(system, category, ownerEmail, recordId);
-  const blob = Utilities.newBlob(bytes, mimeType, filename);
-  const file = folder.createFile(blob);
-  const meta = {
-    storage: 'gdrive',
-    name: file.getName(),
-    mime_type: mimeType,
-    size: file.getSize(),
-    category: category,
-    owner_email: ownerEmail,
-    drive_file_id: file.getId(),
-    drive_url: file.getUrl(),
-    drive_folder_id: folder.getId(),
-    record_id: recordId,
-    updated_at: nowIso_(),
-  };
-  return ok_('drive file uploaded', meta);
-}
-
-function handleDeleteDriveFile_(body) {
-  const actor = normalizeActor_(body.actor || {});
-  const payload = body.payload || {};
-  const driveFileId = String(payload.drive_file_id || '').trim();
-  if (!driveFileId) return err_('drive_file_id is required', 'VALIDATION_ERROR');
-  try {
-    const file = DriveApp.getFileById(driveFileId);
-    file.setTrashed(true);
-    return ok_('drive file deleted', { drive_file_id: driveFileId, deleted_by: actor.email || '' });
-  } catch (error) {
-    return err_(stringifyError_(error), 'DRIVE_DELETE_FAILED');
-  }
-}
-
-
-function handleGetDriveFileContent_(body) {
-  const payload = body.payload || {};
-  const driveFileId = String(payload.drive_file_id || '').trim();
-  if (!driveFileId) return err_('drive_file_id is required', 'VALIDATION_ERROR');
-  try {
-    const file = DriveApp.getFileById(driveFileId);
-    const blob = file.getBlob();
-    return ok_('drive file content', {
-      drive_file_id: driveFileId,
-      name: file.getName(),
-      mime_type: blob.getContentType() || file.getMimeType() || 'application/octet-stream',
-      size: blob.getBytes().length,
-      drive_url: file.getUrl(),
-      content_base64: Utilities.base64Encode(blob.getBytes()),
-      updated_at: nowIso_(),
-    });
-  } catch (error) {
-    return err_(stringifyError_(error), 'DRIVE_READ_FAILED');
-  }
-}
-
-function ensureDriveStorageFolder_(system, category, ownerEmail, recordId) {
-  const root = getOrCreateSystemDriveRootFolder_(system);
-  const categoryFolder = getOrCreateChildFolder_(root, category || 'attachment');
-  const scopeName = sanitizeFolderName_(recordId || ownerEmail || 'common');
-  return getOrCreateChildFolder_(categoryFolder, scopeName);
-}
-
-function getOrCreateSystemDriveRootFolder_(system) {
-  const ssFile = DriveApp.getFileById(system.spreadsheetId);
-  const parentIter = ssFile.getParents();
-  const parent = parentIter.hasNext() ? parentIter.next() : DriveApp.getRootFolder();
-  const folderName = system.formType === 'expense' ? 'expense-attachments' : 'travel-attachments';
-  return getOrCreateChildFolder_(parent, folderName);
-}
-
-function getOrCreateChildFolder_(parent, name) {
-  const safeName = sanitizeFolderName_(name || 'files');
-  const iter = parent.getFoldersByName(safeName);
-  return iter.hasNext() ? iter.next() : parent.createFolder(safeName);
-}
-
-function sanitizeFolderName_(value) {
-  return String(value || 'files').replace(/[\\/:*?"<>|#\[\]]+/g, '_').trim() || 'files';
-}
-
 function ok_(message, data) { return { ok: true, message: message, data: data || {} }; }
 function err_(message, code, data) { return { ok: false, message: message, code: code || 'ERROR', data: data || {} }; }
 function jsonOutput_(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
