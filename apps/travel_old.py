@@ -26,6 +26,7 @@ from cache_utils import (
     save_cloud_backup_excel,
     archive_deleted_record,
     delete_local_travel_record,
+    refresh_runtime_cache,
     load_deleted_archive_rows,
     mark_deleted_archive_restored,
     remove_pending_sync_item,
@@ -653,7 +654,7 @@ def render_form(actor: Actor) -> None:
     budget_options = _option_candidates(grouped, "budget_source") or [""]
     departure_options = ["台南", "台中", "其他"]
     destination_options = ["台北", "新北", "新竹", "台中", "台南", "高雄", "其他"]
-    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "飛機", "派車", "其他", "停車費", "過路費"]
+    transport_opts = ["公務車", "計程車", "私車公用", "高鐵",  "台鐵", "飛機", "派車", "其他", "停車費", "過路費"]
 
     details_rows = form.get("details") or []
     if not isinstance(details_rows, list) or not details_rows:
@@ -1125,13 +1126,27 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
         confirm_key = f"travel_hard_delete_confirm::{record_id}"
         if st.session_state.get(confirm_key):
             if actions[5].button("確認移除", key=f"{key_prefix}_hard_yes_{record_id}"):
-                archive_deleted_record(rec, system_type="travel", actor_email=actor.email)
-                delete_local_travel_record(owner_email, record_id)
-                ok, msg = _queue_and_try_sync_travel(actor, 'travel_hard_delete', {'record_id': record_id, 'user_email': owner_email, 'system_type': 'travel'})
-                _invalidate_travel_master(actor)
-                st.session_state.pop(confirm_key, None)
-                st.success(f"{record_id} 已永久移除。")
-                st.rerun()
+                try:
+                    # 1. 先備份到本地 archive
+                    archive_deleted_record(rec, system_type="travel", actor_email=actor.email)
+                    # 2. 從本地紀錄中移除
+                    delete_local_travel_record(owner_email, record_id)
+                    # 3. 加入同步隊列並嘗試同步
+                    ok, msg = _queue_and_try_sync_travel(actor, 'travel_hard_delete', {'record_id': record_id, 'user_email': owner_email, 'system_type': 'travel'})
+                    # 4. 清除確認狀態
+                    st.session_state.pop(confirm_key, None)
+                    # 5. 強制刷新快取與 master dataframe
+                    refresh_runtime_cache(actor)
+                    _invalidate_travel_master(actor)
+                    _load_travel_master(actor, force_refresh=True)
+                    
+                    if ok:
+                        st.success(f"{record_id} 已從雲端移除。")
+                    else:
+                        st.warning(f"{record_id} 已從本地移除，雲端移除已加入待同步：{msg or '請稍後重新同步'}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"永久移除失敗：{e}")
         elif str(actor.role).lower() == "admin" and actions[5].button("移除", key=f"{key_prefix}_hard_del_{record_id}"):
             st.session_state[confirm_key] = True
             st.warning("此操作會永久移除資料，且已先備份到 deleted archive。")
