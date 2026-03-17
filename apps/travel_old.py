@@ -651,9 +651,9 @@ def render_form(actor: Actor) -> None:
     employee_options = [str(r.get("employee_no", "")).strip() for r in users_rows if str(r.get("employee_no", "")).strip()] or [actor.employee_no]
     project_options = _option_candidates(grouped, "plan_code", "project_id") or [""]
     budget_options = _option_candidates(grouped, "budget_source") or [""]
-    departure_options = ["台南", "台中", "其他"]
+    departure_options = ["台南", "其他"]
     destination_options = ["台北", "新北", "新竹", "台中", "台南", "高雄", "其他"]
-    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "台鐵", "飛機", "派車", "其他"]
+    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "飛機", "派車", "其他"]
 
     details_rows = form.get("details") or []
     if not isinstance(details_rows, list) or not details_rows:
@@ -669,66 +669,144 @@ def render_form(actor: Actor) -> None:
         traveler_val = c2.selectbox("出差人", traveler_options, index=traveler_options.index(form.get("traveler", actor.name)) if form.get("traveler", actor.name) in traveler_options else 0)
         employee_val = c3.selectbox("工號", employee_options, index=employee_options.index(form.get("employee_no", actor.employee_no)) if form.get("employee_no", actor.employee_no) in employee_options else 0)
 
-        c4, c5, c6 = st.columns(3)
-        current_project = str(form.get("project_id", "")).strip()
-        project_select_options = list(project_options) if list(project_options) else [""]
-        if "其他" not in project_select_options:
-            project_select_options.append("其他")
-        project_select_default = current_project if current_project in project_select_options else ("其他" if current_project else project_select_options[0])
-        project_choice = c4.selectbox("計畫編號", project_select_options, index=project_select_options.index(project_select_default))
-        project_other_val = c5.selectbox("計畫編號（其他", value=current_project if current_project not in project_options else "")
-        estimated_cost_val = c6.number_input("預估總金額", min_value=0, step=1, value=int(form.get("estimated_cost", form.get("estimated_total_cost", 0)) or 0),  )
-        
-        d1, d2, d3 = st.columns(3)
-        dep_default = form.get("departure_location", "台南") if form.get("departure_location", "台南") in departure_options else "其他"
-        dest_default = form.get("destination_location", "台北") if form.get("destination_location", "台北") in destination_options else "其他"
-        dep_choice = d1.selectbox("出發地", departure_options, index=departure_options.index(dep_default))
-        dest_choice = d2.selectbox("目的地", destination_options, index=destination_options.index(dest_default))
-
-        dep_other = ""
-        dest_other = ""
-        if dep_choice == "其他":
-            dep_other = st.text_input("其他出發地", value=form.get("departure_location", "") if form.get("departure_location", "") not in departure_options else "")
-        if dest_choice == "其他":
-            dest_other = st.text_input("其他目的地", value=form.get("destination_location", "") if form.get("destination_location", "") not in destination_options else "")
-
-        purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
-        
-        e1, e2, e3, e4 = st.columns([1.4, 1.1, 1.4, 1.1])
-
-        start_val = e1.date_input("起始日期", value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date(),       )
-
-        start_time_current = str(form.get("start_time", "09:00") or "09:00").strip()
-        if start_time_current not in time_options:
-            start_time_current = "09:00"
-        start_time_val = e2.selectbox(
-            "起始時間",
-            time_options,
-            index=time_options.index(start_time_current),
-        )
-
-        end_val = d3.date_input(
-            "結束日期",
-            value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date(),
-        )
-
-        end_time_current = str(form.get("end_time", "17:00") or "17:00").strip()
-        if end_time_current not in time_options:
-            end_time_current = "17:00"
-        end_time_val = d4.selectbox(
-            "結束時間",
-            time_options,
-            index=time_options.index(end_time_current),
-        )
-
-        
-
-        transport_val = st.multiselect("交通方式", transport_opts, default=[x for x in form.get("transport_options", []) if x in transport_opts])
-        tf1, tf2, tf3, tf4 = st.columns(4)
-        private_km_val = tf1.number_input("私車公用里程數", min_value=0, step=1, value=safe_int(form.get("private_car_km", 0)))
-        private_plate_val = tf2.text_input("私車公用車號", value=str(form.get("private_car_plate", "")))
-        official_plate_val = tf3.text_input("公務車車號", value=str(form.get("official_car_plate", "")))
-        other_transport_val = tf4.text_input("其他交通方式", value=str(form.get("other_transport", "")))
+    # 第二行：計畫編號、其他計畫編號(選填)、預估總金額
+    r2c1, r2c2, r2c3 = st.columns([1.2, 1.6, 0.9])
+    
+    current_project = str(form.get("project_id", "")).strip()
+    project_select_options = list(project_options) if list(project_options) else [""]
+    if "其他" not in project_select_options:
+        project_select_options.append("其他")
+    project_select_default = (
+        current_project
+        if current_project in project_select_options
+        else ("其他" if current_project else project_select_options[0])
+    )
+    
+    project_choice = r2c1.selectbox(
+        "計畫編號",
+        project_select_options,
+        index=project_select_options.index(project_select_default),
+    )
+    
+    project_other_default = ""
+    if current_project and current_project not in project_options:
+        project_other_default = current_project
+    
+    project_other_val = r2c2.text_input(
+        "其他計畫編號(選填)",
+        value=project_other_default,
+    )
+    
+    estimated_cost_val = r2c3.number_input(
+        "預估總金額",
+        min_value=0,
+        step=1,
+        value=int(form.get("estimated_cost", form.get("estimated_total_cost", 0)) or 0),
+    )
+    
+    # 第三行：出差事由
+    purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
+    
+    # 第四行：出發地、其他出發地(選填)、目的地、其他目的地(選填)
+    r4c1, r4c2, r4c3, r4c4 = st.columns([1, 1.2, 1, 1.2])
+    
+    dep_current = str(form.get("departure_location", "台南") or "台南").strip()
+    dest_current = str(form.get("destination_location", "台北") or "台北").strip()
+    
+    dep_default = dep_current if dep_current in departure_options else "其他"
+    dest_default = dest_current if dest_current in destination_options else "其他"
+    
+    dep_choice = r4c1.selectbox(
+        "出發地",
+        departure_options,
+        index=departure_options.index(dep_default),
+    )
+    
+    dep_other_default = str(form.get("from_location_other", "") or "").strip()
+    if not dep_other_default and dep_current not in departure_options:
+        dep_other_default = dep_current
+    
+    dep_other = r4c2.text_input(
+        "其他出發地(選填)",
+        value=dep_other_default,
+    )
+    
+    dest_choice = r4c3.selectbox(
+        "目的地",
+        destination_options,
+        index=destination_options.index(dest_default),
+    )
+    
+    dest_other_default = str(form.get("to_location_other", "") or "").strip()
+    if not dest_other_default and dest_current not in destination_options:
+        dest_other_default = dest_current
+    
+    dest_other = r4c4.text_input(
+        "其他目的地(選填)",
+        value=dest_other_default,
+    )
+    
+    # 第五行：起始日期、起始時間、結束日期、結束時間
+    r5c1, r5c2, r5c3, r5c4 = st.columns([1.2, 0.8, 1.2, 0.8])
+    
+    start_val = r5c1.date_input(
+        "起始日期",
+        value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date(),
+    )
+    
+    start_time_current = str(form.get("start_time", "09:00") or "09:00").strip()
+    if start_time_current not in time_options:
+        start_time_current = "09:00"
+    start_time_val = r5c2.selectbox(
+        "起始時間",
+        time_options,
+        index=time_options.index(start_time_current),
+    )
+    
+    end_val = r5c3.date_input(
+        "結束日期",
+        value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date(),
+    )
+    
+    end_time_current = str(form.get("end_time", "17:00") or "17:00").strip()
+    if end_time_current not in time_options:
+        end_time_current = "17:00"
+    end_time_val = r5c4.selectbox(
+        "結束時間",
+        time_options,
+        index=time_options.index(end_time_current),
+    )
+    
+    # 第六行：交通方式、其他交通方式(選填)
+    r6c1, r6c2 = st.columns([1.4, 1.0])
+    
+    transport_val = r6c1.multiselect(
+        "交通方式",
+        transport_opts,
+        default=[x for x in form.get("transport_options", []) if x in transport_opts],
+    )
+    
+    other_transport_val = r6c2.text_input(
+        "其他交通方式(選填)",
+        value=str(form.get("other_transport", "")),
+    )
+    
+    # 保留原有其他交通細節欄位，不改功能，只往下放
+    tf1, tf2, tf3 = st.columns(3)
+    private_km_val = tf1.number_input(
+        "私車公用里程數",
+        min_value=0,
+        step=1,
+        value=safe_int(form.get("private_car_km", 0)),
+    )
+    private_plate_val = tf2.text_input(
+        "私車公用車號",
+        value=str(form.get("private_car_plate", "")),
+    )
+    official_plate_val = tf3.text_input(
+        "公務車車號",
+        value=str(form.get("official_car_plate", "")),
+    )
 
         edited_df = st.data_editor(
             details_df,
@@ -741,7 +819,7 @@ def render_form(actor: Actor) -> None:
                 "起訖地點": st.column_config.TextColumn("起訖地點"),
                 "車別": st.column_config.SelectboxColumn(
                     "車別",
-                    options=["", "高鐵", "台鐵", "客運", "捷運", "公車", "計程車", "私車公用", "公務車", "飛機", "船舶", "其他", "停車費", "過路費"],
+                    options=["", "高鐵", "台鐵", "客運", "捷運", "公車", "計程車", "私車公用", "公務車", "飛機", "船舶", "其他"],
                     required=False,
                 ),
                 "交通費": st.column_config.NumberColumn("交通費", min_value=0, step=1),
@@ -772,8 +850,8 @@ def render_form(actor: Actor) -> None:
             "form_date": form_date_val.isoformat(),
             "traveler": traveler_val,
             "employee_no": employee_val,
-            "project_id": project_other_val.strip() if project_choice == "其他" else project_choice,
-            "budget_source": budget_val,
+            "project_id": project_other_val.strip() if project_other_val.strip() else (project_choice if project_choice != "其他" else ""),
+            "budget_source": str(form.get("budget_source", "")),
             "purpose": purpose_val,
             "departure_location": dep_other if dep_choice == "其他" else dep_choice,
             "destination_location": dest_other if dest_choice == "其他" else dest_choice,
@@ -786,7 +864,7 @@ def render_form(actor: Actor) -> None:
             "private_car_km": safe_int(private_km_val) if "私車公用" in transport_val else 0,
             "private_car_plate": private_plate_val if "私車公用" in transport_val else "",
             "official_car_plate": official_plate_val if "公務車" in transport_val else "",
-            "other_transport": other_transport_val if "其他" in transport_val else "",
+            "other_transport": other_transport_val.strip(),
             "estimated_cost": estimated_cost_val,
             "details": edited_df.fillna("").to_dict(orient="records"),
             "attachment_files": _coerce_meta_list(form.get("attachment_files")),
