@@ -300,7 +300,8 @@ function handleUploadDriveFile_(body) {
   const bytes = Utilities.base64Decode(contentBase64);
   const folder = getAttachmentCategoryFolder_(system, category);
   const safeName = buildSafeDriveFilename_(recordId, filename);
-  const file = folder.createFile(bytes, safeName, mimeType);
+  const blob = Utilities.newBlob(bytes, mimeType, safeName);
+  const file = folder.createFile(blob);
 
   const data = {
     drive_file_id: file.getId(),
