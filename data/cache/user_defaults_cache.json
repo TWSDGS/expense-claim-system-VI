@@ -37,6 +37,23 @@
     "_row_number": 4
   },
   {
+    "email": "katherine.shih@sahtech.org",
+    "default_employee_name": "施品甄",
+    "default_employee_no": 11201,
+    "default_department": "化安處",
+    "default_plan_code": "115CA008",
+    "default_handler_name": "employee",
+    "default_project_manager_name": "employee",
+    "default_department_manager_name": "林佾萱",
+    "default_accountant_name": "黃小芳",
+    "default_note_public": "",
+    "default_trip_time_start": "1899-12-30T01:00:00.000Z",
+    "default_trip_time_end": "1899-12-30T09:00:00.000Z",
+    "is_active": true,
+    "note": "管理員預設值",
+    "_row_number": 3
+  },
+  {
     "email": "joli@sahtech.org",
     "default_employee_name": "李政憲",
     "default_employee_no": 96006,
@@ -52,39 +69,5 @@
     "is_active": true,
     "note": "管理員預設值",
     "_row_number": 3
-  },
-  {
-    "email": "katherine.shih@sahtech.org",
-    "default_employee_name": "施品甄",
-    "default_employee_no": 11201,
-    "default_department": "化安處",
-    "default_plan_code": "115CA008",
-    "default_handler_name": "employee",
-    "default_project_manager_name": "",
-    "default_department_manager_name": "",
-    "default_accountant_name": "",
-    "default_note_public": "",
-    "default_trip_time_start": "1899-12-30T01:00:00.000Z",
-    "default_trip_time_end": "1899-12-30T09:00:00.000Z",
-    "is_active": true,
-    "note": "管理員預設值",
-    "_row_number": 14
-  },
-  {
-    "email": "meichun@sahtech.org",
-    "default_employee_name": "林玫君",
-    "default_employee_no": 96021,
-    "default_department": "化安處",
-    "default_plan_code": "",
-    "default_handler_name": "employee",
-    "default_project_manager_name": "",
-    "default_department_manager_name": "",
-    "default_accountant_name": "",
-    "default_note_public": "",
-    "default_trip_time_start": "1899-12-30T01:00:00.000Z",
-    "default_trip_time_end": "1899-12-30T09:00:00.000Z",
-    "is_active": true,
-    "note": "管理員預設值",
-    "_row_number": 5
   }
 ]

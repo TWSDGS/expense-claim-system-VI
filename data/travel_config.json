@@ -1,0 +1,15 @@
+{
+  "backend": "google",
+  "google": {
+    "spreadsheet_id": "1qC_4HAcKJPJ3vIAh_X9bZ8Fnw0DGYIr3NRGD669QK2Q",
+    "submit_sheet_name": "申請表單",
+    "draft_sheet_name": "草稿列表",
+    "apps_script_url": "https://script.google.com/macros/s/AKfycbxNYLvuTKJ3CQ0vatp13tS7L5qLOV0jNUhKrSVhkin5uhd6uDkYtS7d0dO7DslzklwPfg/exec",
+    "api_key": ""
+  },
+  "ui": {
+    "system_name": "出差報帳系統",
+    "cloud_excel_url": "https://docs.google.com/spreadsheets/d/1qC_4HAcKJPJ3vIAh_X9bZ8Fnw0DGYIr3NRGD669QK2Q/edit",
+    "download_excel_filename": "travel_export.xlsx"
+  }
+}
