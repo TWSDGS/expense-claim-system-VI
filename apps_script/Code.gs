@@ -305,8 +305,7 @@ function handleUploadDriveFile_(body) {
   const bytes = Utilities.base64Decode(contentBase64);
   const folder = getAttachmentCategoryFolder_(system, category);
   const safeName = buildSafeDriveFilename_(recordId, filename);
-  const blob = Utilities.newBlob(bytes, mimeType, safeName);
-  const file = folder.createFile(blob);
+  const file = folder.createFile(bytes, safeName, mimeType);
 
   const data = {
     drive_file_id: file.getId(),
@@ -618,10 +617,14 @@ function deleteRecordByIdFromSheet_(system, sheetName, recordId) {
   const lastRow = sheet.getLastRow();
   if (lastRow < WEBAPP_API_CONFIG.DATA_START_ROW) return false;
   const idValues = sheet.getRange(WEBAPP_API_CONFIG.DATA_START_ROW, idCol + 1, lastRow - WEBAPP_API_CONFIG.DATA_START_ROW + 1, 1).getValues().flat();
+  let deleted = false;
   for (let i = idValues.length - 1; i >= 0; i--) {
-    if (((idValues[i] || '') + '').trim() === recordId) { sheet.deleteRow(WEBAPP_API_CONFIG.DATA_START_ROW + i); return true; }
+    if (((idValues[i] || '') + '').trim() === recordId) {
+      sheet.deleteRow(WEBAPP_API_CONFIG.DATA_START_ROW + i);
+      deleted = true;
+    }
   }
-  return false;
+  return deleted;
 }
 
 function findRecordAnywhere_(system, recordId) {
@@ -641,11 +644,7 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
   clean.record_id = (clean.record_id || '').trim();
   clean.status = finalStatus;
   clean.form_type = system.formType;
-  // Ensure owner_name is a person's name, not a role or other system value
-  clean.owner_name = String(clean.owner_name || clean.employee_name || actor.name || '').trim();
-  if (!clean.owner_name) {
-    clean.owner_name = actor.name || '';
-  }
+  clean.owner_name = clean.owner_name || actor.name || '';
   clean.user_email = normalizeEmail_(clean.user_email || actor.email || '');
   clean.actor_role = actor.role || 'user';
   if (!clean.created_at) clean.created_at = (existingRecord && existingRecord.created_at) || now;
@@ -679,8 +678,6 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
     clean.project_manager_name = clean.project_manager_name || '';
     clean.department_manager_name = clean.department_manager_name || '';
     clean.accountant_name = clean.accountant_name || '';
-    // Ensure employee_name is preserved for owner_name fallback
-    clean.employee_name = clean.employee_name || '';
     return clean;
   }
 
