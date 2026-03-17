@@ -179,7 +179,6 @@ def default_form(actor: Actor) -> Dict[str, Any]:
         "project_id": "",
         "budget_source": "",
         "purpose": "",
-        "estimated_cost": 0,
         "departure_location": "台南",
         "destination_location": "台北",
         "start_date": date.today().isoformat(),
@@ -210,6 +209,75 @@ def get_form(actor: Actor) -> Dict[str, Any]:
 def set_form(actor: Actor, data: Dict[str, Any]) -> None:
     st.session_state[form_key(actor)] = data
 
+def _coerce_meta_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return {}
+        try:
+            parsed = json.loads(s)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _coerce_meta_list(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, dict)]
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+            return [x for x in parsed if isinstance(x, dict)] if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _normalize_loaded_travel_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+    r = dict(rec or {})
+
+    if not r.get("project_id") and r.get("plan_code"):
+        r["project_id"] = r.get("plan_code")
+
+    if not r.get("purpose") and r.get("trip_purpose"):
+        r["purpose"] = r.get("trip_purpose")
+    if not r.get("purpose") and r.get("purpose_desc"):
+        r["purpose"] = r.get("purpose_desc")
+
+    if not r.get("start_date") and r.get("trip_date_start"):
+        r["start_date"] = r.get("trip_date_start")
+    if not r.get("end_date") and r.get("trip_date_end"):
+        r["end_date"] = r.get("trip_date_end")
+
+    if not r.get("departure_location") and r.get("from_location"):
+        r["departure_location"] = r.get("from_location")
+    if not r.get("destination_location") and r.get("to_location"):
+        r["destination_location"] = r.get("to_location")
+
+    details = r.get("details")
+    if not details and r.get("expense_rows"):
+        details = r.get("expense_rows")
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except Exception:
+            details = []
+    if not isinstance(details, list) or not details:
+        details = [{"日期": r.get("start_date", date.today().isoformat()), "起訖地點": "", "車別": "", "交通費": 0, "膳雜費": 0, "住宿費": 0, "其它": 0, "單據編號": ""}]
+    r["details"] = details
+
+    r["signature_file"] = _coerce_meta_dict(r.get("signature_file"))
+    r["attachment_files"] = _coerce_meta_list(r.get("attachment_files"))
+
+    return r
+
+
 
 def _travel_local_rows(actor: Actor) -> List[Dict[str, Any]]:
     if str(actor.role).lower() == "admin":
@@ -238,26 +306,6 @@ def _load_travel_master(actor: Actor, force_refresh: bool = False) -> Tuple[pd.D
             df['status'] = 'draft'
         if 'owner_name' not in df.columns:
             df['owner_name'] = df.get('traveler', '')
-        if 'project_id' not in df.columns and 'plan_code' in df.columns:
-            df['project_id'] = df.get('plan_code', '')
-        if 'project_id' in df.columns and 'plan_code' in df.columns:
-            df['project_id'] = df['project_id'].astype(str).where(df['project_id'].astype(str).str.strip() != '', df['plan_code'].astype(str))
-        if 'display_trip_date' not in df.columns:
-            if 'start_date' in df.columns:
-                df['display_trip_date'] = df.get('start_date', '')
-            elif 'trip_date_start' in df.columns:
-                df['display_trip_date'] = df.get('trip_date_start', '')
-            else:
-                df['display_trip_date'] = df.get('form_date', '')
-        if 'amount_total' not in df.columns:
-            df['amount_total'] = 0
-        if 'estimated_cost' not in df.columns and 'estimated_total_cost' in df.columns:
-            df['estimated_cost'] = df.get('estimated_total_cost', 0)
-        if 'estimated_total_cost' not in df.columns and 'estimated_cost' in df.columns:
-            df['estimated_total_cost'] = df.get('estimated_cost', 0)
-        df['amount_total'] = pd.to_numeric(df.get('amount_total', 0), errors='coerce').fillna(0)
-        est_series = pd.to_numeric(df.get('estimated_cost', 0), errors='coerce').fillna(0) if 'estimated_cost' in df.columns else 0
-        df['amount_total'] = df['amount_total'].where(df['amount_total'] > 0, est_series)
     st.session_state[cache_key] = (df, report)
     st.session_state['travel_sync_report'] = report
     st.session_state['cloud_online_travel'] = bool(report.get('cloud_online', False))
@@ -540,7 +588,7 @@ def remove_signature(actor: Actor) -> None:
 
 
 def load_into_form(actor: Actor, rec: Dict[str, Any], as_copy: bool = False) -> None:
-    data = dict(rec)
+    data = _normalize_loaded_travel_record(rec)
     if as_copy:
         data["record_id"] = ""
         data["form_date"] = date.today().isoformat()
@@ -618,40 +666,34 @@ def render_form(actor: Actor) -> None:
         traveler_val = c2.selectbox("出差人", traveler_options, index=traveler_options.index(form.get("traveler", actor.name)) if form.get("traveler", actor.name) in traveler_options else 0)
         employee_val = c3.selectbox("工號", employee_options, index=employee_options.index(form.get("employee_no", actor.employee_no)) if form.get("employee_no", actor.employee_no) in employee_options else 0)
 
-        c4, c6, c7 = st.columns(3)
+        c4, c5, c6, c7 = st.columns(4)
         current_project = str(form.get("project_id", "")).strip()
         project_select_options = list(project_options) if list(project_options) else [""]
         if "其他" not in project_select_options:
             project_select_options.append("其他")
         project_select_default = current_project if current_project in project_select_options else ("其他" if current_project else project_select_options[0])
         project_choice = c4.selectbox("計畫編號", project_select_options, index=project_select_options.index(project_select_default))
+        budget_val = c5.selectbox("預算來源", budget_options, index=budget_options.index(form.get("budget_source", "")) if form.get("budget_source", "") in budget_options else 0)
         project_other_val = ""
         if project_choice == "其他":
             project_other_val = st.text_input("計畫編號（其他）", value=current_project if current_project not in project_options else "")
 
-        dep_current = str(form.get("departure_location", "台南") or "台南").strip()
-        dest_current = str(form.get("destination_location", "台北") or "台北").strip()
-        dep_default = dep_current if dep_current in departure_options else "其他"
-        dest_default = dest_current if dest_current in destination_options else "其他"
+        dep_default = form.get("departure_location", "台南") if form.get("departure_location", "台南") in departure_options else "其他"
+        dest_default = form.get("destination_location", "台北") if form.get("destination_location", "台北") in destination_options else "其他"
         dep_choice = c6.selectbox("出發地", departure_options, index=departure_options.index(dep_default))
         dest_choice = c7.selectbox("目的地", destination_options, index=destination_options.index(dest_default))
 
-        dep_other_default = str(form.get("from_location_other", "") or "").strip()
-        if not dep_other_default and dep_current not in departure_options:
-            dep_other_default = dep_current
-        dest_other_default = str(form.get("to_location_other", "") or "").strip()
-        if not dest_other_default and dest_current not in destination_options:
-            dest_other_default = dest_current
-
-        other_col1, other_col2 = st.columns(2)
-        dep_other = other_col1.text_input("其他出發地(選填)", value=dep_other_default)
-        dest_other = other_col2.text_input("其他目的地(選填)", value=dest_other_default)
+        dep_other = ""
+        dest_other = ""
+        if dep_choice == "其他":
+            dep_other = st.text_input("其他出發地", value=form.get("departure_location", "") if form.get("departure_location", "") not in departure_options else "")
+        if dest_choice == "其他":
+            dest_other = st.text_input("其他目的地", value=form.get("destination_location", "") if form.get("destination_location", "") not in destination_options else "")
 
         purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
-        d1, d2, d3 = st.columns(3)
+        d1, d2 = st.columns(2)
         start_val = d1.date_input("起始日期", value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date())
         end_val = d2.date_input("結束日期", value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date())
-        estimated_cost_val = d3.number_input("預估總金額", min_value=0, step=1, value=int(form.get("estimated_cost", form.get("estimated_total_cost", 0)) or 0))
 
         transport_val = st.multiselect("交通方式", transport_opts, default=[x for x in form.get("transport_options", []) if x in transport_opts])
         tf1, tf2, tf3, tf4 = st.columns(4)
@@ -703,13 +745,11 @@ def render_form(actor: Actor) -> None:
             "traveler": traveler_val,
             "employee_no": employee_val,
             "project_id": project_other_val.strip() if project_choice == "其他" else project_choice,
-            "budget_source": str(form.get("budget_source", "")),
+            "budget_source": budget_val,
             "purpose": purpose_val,
-            "departure_location": dep_other.strip() if dep_choice == "其他" and dep_other.strip() else dep_choice,
-            "destination_location": dest_other.strip() if dest_choice == "其他" and dest_other.strip() else dest_choice,
-            "from_location_other": dep_other.strip(),
-            "to_location_other": dest_other.strip(),
-            "location": " → ".join([x for x in [(dep_other.strip() if dep_choice == "其他" and dep_other.strip() else dep_choice), (dest_other.strip() if dest_choice == "其他" and dest_other.strip() else dest_choice)] if x]),
+            "departure_location": dep_other if dep_choice == "其他" else dep_choice,
+            "destination_location": dest_other if dest_choice == "其他" else dest_choice,
+            "location": " → ".join([x for x in [(dep_other if dep_choice == "其他" else dep_choice), (dest_other if dest_choice == "其他" else dest_choice)] if x]),
             "start_date": start_val.isoformat(),
             "end_date": end_val.isoformat(),
             "transport_options": list(transport_val),
@@ -717,11 +757,9 @@ def render_form(actor: Actor) -> None:
             "private_car_plate": private_plate_val if "私車公用" in transport_val else "",
             "official_car_plate": official_plate_val if "公務車" in transport_val else "",
             "other_transport": other_transport_val if "其他" in transport_val else "",
-            "estimated_cost": int(estimated_cost_val or 0),
-            "estimated_total_cost": int(estimated_cost_val or 0),
             "details": edited_df.fillna("").to_dict(orient="records"),
-            "attachment_files": list(form.get("attachment_files", []) or []),
-            "signature_file": dict(form.get("signature_file", {}) or {}),
+            "attachment_files": _coerce_meta_list(form.get("attachment_files")),
+            "signature_file": _coerce_meta_dict(form.get("signature_file")),
             "user_email": actor.email,
             "owner_name": actor.name,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -731,8 +769,6 @@ def render_form(actor: Actor) -> None:
         payload["lodging_fee_total"] = int(pd.Series([safe_int(x.get("住宿費", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
         payload["other_fee_total"] = int(pd.Series([safe_int(x.get("其它", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
         payload["amount_total"] = payload["transport_fee_total"] + payload["misc_fee_total"] + payload["lodging_fee_total"] + payload["other_fee_total"]
-        if int(payload.get("amount_total", 0) or 0) <= 0 and int(payload.get("estimated_cost", 0) or 0) > 0:
-            payload["amount_total"] = int(payload.get("estimated_cost", 0) or 0)
 
         if save_draft or submit_final or make_pdf:
             payload = persist_uploads(actor, payload, attach_uploads, signature_upload)
@@ -943,23 +979,19 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
         cols[0].write(rec.get("record_id", ""))
         cols[1].write(rec.get("status", ""))
         cols[2].write(get_sync_status_label(rec))
-        display_date = str(rec.get("display_trip_date") or rec.get("start_date") or rec.get("trip_date_start") or rec.get("form_date") or "")[:10]
-        cols[3].write(display_date)
+        cols[3].write(str(rec.get("form_date", ""))[:10])
         cols[4].write(rec.get("owner_name", "") or rec.get("traveler", ""))
-        cols[5].write(rec.get("project_id", "") or rec.get("plan_code", ""))
-        amount_display = safe_int(rec.get('amount_total', 0)) or safe_int(rec.get('estimated_cost', 0))
-        cols[6].write(f"{amount_display:,}")
+        cols[5].write(rec.get("project_id", ""))
+        cols[6].write(f"{safe_int(rec.get('amount_total')):,}")
         cols[7].write(str(rec.get("updated_at", ""))[:19])
         actions = cols[8].columns(6)
         record_id = str(rec.get("record_id") or "")
         owner_email = str(rec.get("user_email") or actor.email or "").strip().lower()
         if actions[0].button("編輯", key=f"{key_prefix}_edit_{rec.get('record_id')}"):
             load_into_form(actor, rec, as_copy=False)
-            st.session_state["travel_page"] = "new"
             st.rerun()
         if actions[1].button("複製", key=f"{key_prefix}_copy_{rec.get('record_id')}"):
             load_into_form(actor, rec, as_copy=True)
-            st.session_state["travel_page"] = "new"
             st.rerun()
         pdf_bytes = _build_pdf(actor, rec)
         actions[2].download_button("下載", data=pdf_bytes, file_name=f"出差報帳_{rec.get('record_id') or 'preview'}.pdf", mime="application/pdf", key=f"{key_prefix}_dl_{rec.get('record_id')}")
