@@ -32,6 +32,7 @@ from cache_utils import (
     archive_deleted_record,
     load_deleted_archive_rows,
     mark_deleted_archive_restored,
+    remove_pending_sync_item,
 )
 from pdf_gen import build_pdf_bytes, merge_expense_pdf_with_attachments
 from shared_plan_options import get_shared_plan_code_options
@@ -487,22 +488,75 @@ def _render_deleted_archive_restore_expense(actor: Actor) -> None:
         st.rerun()
 
 
+def _expense_pending_items(owner_email: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for item in load_pending_sync(owner_email) or []:
+        payload = dict(item.get("payload") or {})
+        system_type = str(payload.get("system_type") or ("travel" if "travel" in str(item.get("operation", "")).lower() else "expense")).lower()
+        if system_type == "expense":
+            items.append(item)
+    return items
+
+
+def _expense_raw_pending_count(owner_email: str) -> int:
+    rows = []
+    for item in _expense_pending_items(owner_email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        needs_sync = bool(payload.get("needs_sync", True))
+        if needs_sync and sync_status in {"pending", "failed", "conflict"}:
+            rows.append(item)
+    return len(rows)
+
+
+def _cleanup_stale_expense_pending(actor: Actor) -> int:
+    report = st.session_state.get("expense_sync_report", {}) or {}
+    raw_pending = _expense_raw_pending_count(actor.email)
+    report_pending = int(report.get("pending_count", 0) or 0)
+    cloud_online = bool(report.get("cloud_online", False))
+    if not cloud_online or raw_pending <= report_pending:
+        return 0
+    removed = 0
+    for item in _expense_pending_items(actor.email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        if sync_status == "conflict":
+            continue
+        event_id = str(item.get("event_id") or payload.get("event_id") or "").strip()
+        record_id = str(payload.get("record_id") or "").strip()
+        if event_id:
+            removed += remove_pending_sync_item(actor.email, event_id=event_id, system_type="expense")
+        elif record_id:
+            removed += remove_pending_sync_item(actor.email, record_id=record_id, system_type="expense")
+    return removed
+
+
 def render_sync_status_sidebar_expense(current_user_email: str) -> None:
     if not current_user_email:
         return
     actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
-    pending_count = count_pending_sync(current_user_email, system_type="expense")
     st.sidebar.markdown("---")
     st.sidebar.subheader("雲端同步狀態")
-    cloud_online = st.session_state.get("cloud_online_expense", True)
+
+    _, report = _load_expense_master(actor, force_refresh=False)
+    raw_pending_count = _expense_raw_pending_count(current_user_email)
+    report_pending_count = int(report.get("pending_count", 0) or 0)
+    stale_queue_detected = raw_pending_count != report_pending_count
+
+    cloud_online = bool(report.get("cloud_online", st.session_state.get("cloud_online_expense", True)))
+    st.session_state["cloud_online_expense"] = cloud_online
     if cloud_online:
         st.sidebar.success("雲端：已連線")
     else:
         st.sidebar.error("雲端：未連線")
-    if pending_count > 0:
-        st.sidebar.warning(f"你有 {pending_count} 筆支出資料尚未同步到雲端")
+
+    if report_pending_count > 0:
+        st.sidebar.warning(f"你有 {report_pending_count} 筆支出資料尚未同步到雲端")
     else:
         st.sidebar.success("你的支出資料皆已同步")
+
+    if stale_queue_detected:
+        st.sidebar.warning("偵測到本機待同步殘留，已建議清理")
 
     cloud_url = _get_cloud_excel_url()
     if cloud_url:
@@ -524,33 +578,51 @@ def render_sync_status_sidebar_expense(current_user_email: str) -> None:
 
     _render_deleted_archive_restore_expense(actor)
 
-    report = st.session_state.get('expense_sync_report', {}) or {}
-    st.sidebar.caption(f"master={report.get('master_count', 0)}｜cloud={report.get('cloud_count', 0)}｜pending={report.get('pending_count', 0)}")
-    if report.get('cloud_count', 0) != report.get('master_count', 0) and report.get('pending_count', 0) == 0:
+    st.sidebar.caption(f"master={report.get('master_count', 0)}｜cloud={report.get('cloud_count', 0)}｜pending={report_pending_count}")
+    if report.get('cloud_count', 0) != report.get('master_count', 0) and report_pending_count == 0:
         st.sidebar.warning('偵測到雲端與前端筆數不一致，建議重新同步或重新整理。')
 
     if st.sidebar.button("立即同步支出資料", key="sync_expense_now_btn", use_container_width=True):
         try:
-            result = sync_pending_events('expense', actor, get_api())
-            _invalidate_expense_master(actor)
-            _load_expense_master(actor, force_refresh=True)
+            sync_actor = get_current_actor() or Actor(name='', email=current_user_email, role='user')
+            result = sync_pending_events('expense', sync_actor, get_api())
+            _invalidate_expense_master(sync_actor)
+            _, report = _load_expense_master(sync_actor, force_refresh=True)
             st.session_state['cloud_online_expense'] = result.get('failed', 0) == 0
-            if result.get('synced', 0) == 0 and result.get('failed', 0) == 0:
-                st.sidebar.info("目前沒有待同步的支出資料。")
+            cleanup_removed = 0
+            if result.get('failed', 0) == 0 and result.get('conflicts', 0) == 0:
+                cleanup_removed = _cleanup_stale_expense_pending(sync_actor)
+                if cleanup_removed:
+                    _invalidate_expense_master(sync_actor)
+                    _, report = _load_expense_master(sync_actor, force_refresh=True)
+            if result.get('synced', 0) == 0 and result.get('failed', 0) == 0 and report.get('pending_count', 0) == 0:
+                msg = "目前沒有待同步的支出資料。"
+                if cleanup_removed:
+                    msg += f" 已清理 {cleanup_removed} 筆本機待同步殘留。"
+                st.sidebar.info(msg)
             elif result.get('failed', 0) == 0:
-                st.sidebar.success(f"同步完成：{result.get('synced', 0)} 筆")
+                msg = f"同步完成：{result.get('synced', 0)} 筆"
+                if cleanup_removed:
+                    msg += f"；另已清理 {cleanup_removed} 筆本機待同步殘留"
+                st.sidebar.success(msg)
             else:
                 st.sidebar.warning(f"同步完成：成功 {result.get('synced', 0)} 筆，失敗 {result.get('failed', 0)} 筆")
         except Exception as e:
             st.session_state['cloud_online_expense'] = False
             st.sidebar.error(f"同步失敗：{e}")
 
+
+
 def render_top_sync_notice_expense(current_user_email: str) -> None:
     if not current_user_email:
         return
-    pending_count = count_pending_sync(current_user_email, system_type="expense")
+    actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
+    _, report = _load_expense_master(actor, force_refresh=False)
+    pending_count = int(report.get("pending_count", 0) or 0)
     if pending_count > 0:
         st.info(f"提醒：你有 {pending_count} 筆支出資料尚未同步到雲端。")
+    elif _expense_raw_pending_count(current_user_email) != pending_count:
+        st.info("提醒：偵測到本機待同步殘留，已建議清理。")
 
 
 def option_values(grouped: Dict[str, List[str]], option_type: str, include_other: bool = True) -> List[str]:
@@ -577,8 +649,8 @@ def default_form(actor: Actor, defaults: Dict[str, Any]) -> Dict[str, Any]:
         "plan_code": defaults.get("default_plan_code", ""),
         "purpose_desc": "",
         "payment_target": "employee",
-        "employee_name": actor.name or "",
-        "employee_no": actor.employee_no or "",
+        "employee_name": "",
+        "employee_no": "",
         "advance_amount": 0,
         "offset_amount": 0,
         "balance_refund_amount": 0,
@@ -639,40 +711,16 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     plan_val = str(d.get("plan_code", "")).strip()
     st.session_state.setdefault(keys["plan_code"], plan_val if plan_val in plan_opts else "其他")
     st.session_state.setdefault(keys["plan_code_other"], "" if plan_val in plan_opts else plan_val)
-    actor_name = str(st.session_state.get("actor_name", "")).strip()
-    actor_employee_no = str(st.session_state.get("actor_employee_no", "")).strip()
-
     emp_name_opts = option_values(grouped_options, "employee_name")
     emp_no_opts = option_values(grouped_options, "employee_no")
-
-    # 讓登入者姓名 / 工號即使原本不在選單，也能出現在下拉清單最前面
-    if actor_name and actor_name not in emp_name_opts:
-        emp_name_opts = [actor_name] + emp_name_opts
-    if actor_employee_no and actor_employee_no not in emp_no_opts:
-        emp_no_opts = [actor_employee_no] + emp_no_opts
-
-    emp_name = str(d.get("employee_name", "")).strip() or actor_name
-    emp_no = str(d.get("employee_no", "")).strip() or actor_employee_no
-
+    emp_name = str(d.get("employee_name", "")).strip()
+    emp_no = str(d.get("employee_no", "")).strip()
     first_emp_name = emp_name_opts[0] if emp_name_opts else ""
     first_emp_no = emp_no_opts[0] if emp_no_opts else ""
-
-    st.session_state.setdefault(
-        keys["employee_name"],
-        emp_name if emp_name in emp_name_opts else (first_emp_name if emp_name == "" else "其他")
-    )
-    st.session_state.setdefault(
-        keys["employee_name_other"],
-        "" if emp_name in emp_name_opts else emp_name
-    )
-    st.session_state.setdefault(
-        keys["employee_no"],
-        emp_no if emp_no in emp_no_opts else (first_emp_no if emp_no == "" else "其他")
-    )
-    st.session_state.setdefault(
-        keys["employee_no_other"],
-        "" if emp_no in emp_no_opts else emp_no
-    )
+    st.session_state.setdefault(keys["employee_name"], emp_name if emp_name in emp_name_opts else (first_emp_name if emp_name == "" else "其他"))
+    st.session_state.setdefault(keys["employee_name_other"], "" if emp_name in emp_name_opts else emp_name)
+    st.session_state.setdefault(keys["employee_no"], emp_no if emp_no in emp_no_opts else (first_emp_no if emp_no == "" else "其他"))
+    st.session_state.setdefault(keys["employee_no_other"], "" if emp_no in emp_no_opts else emp_no)
 
 
 def _reset_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, List[str]]) -> None:
