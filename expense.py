@@ -392,54 +392,37 @@ def _queue_and_try_sync_expense(actor: Actor, operation: str, payload: Dict[str,
         return False, str(exc)
 
 def load_records_cloud_or_backup(actor: Actor, status: Optional[str] = None) -> Tuple[pd.DataFrame, str]:
-    try:
-        df = get_api().records_df(actor=actor, status=status, owner_only=False).fillna("")
-        local_rows = load_local_expense_drafts(actor.email)
-        if local_rows:
-            local_df = pd.DataFrame(local_rows).fillna("")
-            if not df.empty:
-                if status:
-                    local_df = local_df[local_df.get("status", "").astype(str).str.lower() == status]
-                df = pd.concat([df, local_df], ignore_index=True).fillna("")
-                df = df.drop_duplicates(subset=["record_id"], keep="last") if "record_id" in df.columns else df
-            elif status == "draft":
-                df = local_df
-                return df.fillna(""), "local"
-        if status is None:
-            df_copy = df.copy().fillna("")
-            if not df_copy.empty:
-                if "status" not in df_copy.columns:
-                    df_copy["status"] = "draft"
-                status_series = df_copy["status"].astype(str).str.lower()
-                draft_cloud = df_copy[status_series.isin(["draft", "deleted"])].copy()
-                submitted_cloud = df_copy[status_series.isin(["submitted", "void"])].copy()
-            else:
-                draft_cloud = pd.DataFrame()
-                submitted_cloud = pd.DataFrame()
-            save_cloud_backup_excel({"申請列表": submitted_cloud, "草稿列表": draft_cloud})
+    df, report = _load_expense_master(actor, force_refresh=False)
+    source = str(report.get("source") or "empty")
+    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    if not out.empty:
+        out = out.fillna("")
+        if "status" not in out.columns:
+            out["status"] = "draft"
+        out["status"] = out["status"].astype(str).str.lower()
+        if status == "draft":
+            out = out[out["status"].isin(["draft", "deleted"])].copy()
         elif status == "submitted":
-            save_cloud_backup_excel({"申請列表": df})
-        elif status == "draft":
-            save_cloud_backup_excel({"草稿列表": df})
-        return df, "cloud"
-    except Exception:
-        if status in {"draft", None}:
-            local_rows = load_local_expense_drafts(actor.email)
-            if local_rows:
-                df_local = pd.DataFrame(local_rows).fillna("")
-                if status:
-                    status_series = df_local.get("status", pd.Series(dtype=str)).astype(str).str.lower()
-                    df_local = df_local[status_series == status]
-                return df_local, "local"
-        if status == "submitted":
-            df = load_backup_sheet_df("申請列表")
-            if df.empty:
-                df = load_backup_sheet_df("申請表單")
-        else:
-            df = load_backup_sheet_df("草稿列表")
-        if not df.empty:
-            return df.fillna(""), "backup"
-        return pd.DataFrame(), "empty"
+            out = out[out["status"].isin(["submitted", "void"])].copy()
+        elif status:
+            out = out[out["status"] == str(status).strip().lower()].copy()
+        if "record_id" in out.columns:
+            out = out.drop_duplicates(subset=["record_id"], keep="last")
+
+    if status is None:
+        df_copy = out.copy()
+        if not df_copy.empty and "status" not in df_copy.columns:
+            df_copy["status"] = "draft"
+        status_series = df_copy.get("status", pd.Series(dtype=str)).astype(str).str.lower() if not df_copy.empty else pd.Series(dtype=str)
+        draft_cloud = df_copy[status_series.isin(["draft", "deleted"])].copy() if not df_copy.empty else pd.DataFrame()
+        submitted_cloud = df_copy[status_series.isin(["submitted", "void"])].copy() if not df_copy.empty else pd.DataFrame()
+        save_cloud_backup_excel({"申請列表": submitted_cloud, "草稿列表": draft_cloud})
+    elif status == "submitted":
+        save_cloud_backup_excel({"申請列表": out})
+    elif status == "draft":
+        save_cloud_backup_excel({"草稿列表": out})
+
+    return out, source
 
 
 def refresh_runtime_cache(actor: Actor) -> None:
@@ -714,27 +697,30 @@ def get_form_data(actor: Actor, defaults: Dict[str, Any]) -> Dict[str, Any]:
 def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, List[str]]) -> None:
     d = form_data
     keys = EXPENSE_WIDGET_KEYS
-    st.session_state.setdefault(keys["form_date"], normalize_date_value(d.get("form_date")))
-    st.session_state.setdefault(keys["purpose_desc"], str(d.get("purpose_desc", "")))
-    st.session_state.setdefault(keys["payment_target"], str(d.get("payment_target", "employee") or "employee"))
-    st.session_state.setdefault(keys["advance_amount"], safe_int(d.get("advance_amount")))
-    st.session_state.setdefault(keys["offset_amount"], safe_int(d.get("offset_amount")))
-    st.session_state.setdefault(keys["balance_refund_amount"], safe_int(d.get("balance_refund_amount")))
-    st.session_state.setdefault(keys["supplement_amount"], safe_int(d.get("supplement_amount")))
-    st.session_state.setdefault(keys["vendor_name"], str(d.get("vendor_name", "")))
-    st.session_state.setdefault(keys["vendor_address"], str(d.get("vendor_address", "")))
-    st.session_state.setdefault(keys["vendor_payee_name"], str(d.get("vendor_payee_name", "")))
-    st.session_state.setdefault(keys["receipt_count"], safe_int(d.get("receipt_count")))
-    st.session_state.setdefault(keys["amount_untaxed"], safe_int(d.get("amount_untaxed")))
-    st.session_state.setdefault(keys["tax_mode"], str(d.get("tax_mode", "5%") or "5%"))
-    st.session_state.setdefault(keys["department"], str(d.get("department", "化安處")))
-    st.session_state.setdefault(keys["note_public"], str(d.get("note_public", "")))
-    st.session_state.setdefault(keys["remarks_internal"], str(d.get("remarks_internal", "")))
+    
+    # 核心修復：若 session_state 已有值且不為空，則保留它，避免下拉選單被重置
+    def set_default(key, val):
+        if key not in st.session_state or st.session_state[key] in [None, "", 0]:
+            st.session_state[key] = val
+
+    set_default(keys["form_date"], normalize_date_value(d.get("form_date")))
+    set_default(keys["purpose_desc"], str(d.get("purpose_desc", "")))
+    set_default(keys["payment_target"], str(d.get("payment_target", "employee") or "employee"))
+    set_default(keys["advance_amount"], safe_int(d.get("advance_amount")))
+    set_default(keys["offset_amount"], safe_int(d.get("offset_amount")))
+    set_default(keys["balance_refund_amount"], safe_int(d.get("balance_refund_amount")))
+    set_default(keys["supplement_amount"], safe_int(d.get("supplement_amount")))
+    set_default(keys["vendor_name"], str(d.get("vendor_name", "")))
+    set_default(keys["vendor_address"], str(d.get("vendor_address", "")))
+    set_default(keys["vendor_payee_name"], str(d.get("vendor_payee_name", "")))
+    set_default(keys["receipt_count"], safe_int(d.get("receipt_count")))
+    set_default(keys["amount_untaxed"], safe_int(d.get("amount_untaxed")))
+    set_default(keys["tax_mode"], str(d.get("tax_mode", "5%") or "5%"))
+    set_default(keys["department"], str(d.get("department", "化安處")))
+    set_default(keys["note_public"], str(d.get("note_public", "")))
+    set_default(keys["remarks_internal"], str(d.get("remarks_internal", "")))
     plan_opts = option_values(grouped_options, "plan_code")
     plan_val = str(d.get("plan_code", "")).strip()
-    # If plan_val is not in options but has a value, add it to preserve it
-    if plan_val and plan_val not in plan_opts:
-        plan_opts = [plan_val] + plan_opts
     st.session_state.setdefault(keys["plan_code"], plan_val if plan_val in plan_opts else "其他")
     st.session_state.setdefault(keys["plan_code_other"], "" if plan_val in plan_opts else plan_val)
     actor_name = str(st.session_state.get("actor_name", "")).strip()
@@ -750,14 +736,6 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     
     emp_name = str(d.get("employee_name", "")).strip() or actor_name
     emp_no = str(d.get("employee_no", "")).strip() or actor_employee_no
-    
-    # If emp_name is not in options but has a value, add it to preserve it
-    if emp_name and emp_name not in emp_name_opts:
-        emp_name_opts = [emp_name] + emp_name_opts
-    
-    # If emp_no is not in options but has a value, add it to preserve it
-    if emp_no and emp_no not in emp_no_opts:
-        emp_no_opts = [emp_no] + emp_no_opts
     
     first_emp_name = emp_name_opts[0] if emp_name_opts else ""
     first_emp_no = emp_no_opts[0] if emp_no_opts else ""
@@ -1535,7 +1513,7 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
                     refresh_runtime_cache(actor)
                     _invalidate_expense_master(actor)
                     _load_expense_master(actor, force_refresh=True)
-                    
+
                     if ok:
                         st.success(f"{record_id} 已從雲端移除。")
                     else:
