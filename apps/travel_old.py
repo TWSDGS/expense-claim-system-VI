@@ -182,7 +182,9 @@ def default_form(actor: Actor) -> Dict[str, Any]:
         "departure_location": "台南",
         "destination_location": "台北",
         "start_date": date.today().isoformat(),
+        "start_time": "09:00",
         "end_date": date.today().isoformat(),
+        "end_time": "17:00",
         "transport_options": [],
         "private_car_km": 0,
         "private_car_plate": "",
@@ -651,7 +653,7 @@ def render_form(actor: Actor) -> None:
     budget_options = _option_candidates(grouped, "budget_source") or [""]
     departure_options = ["台南", "台中", "其他"]
     destination_options = ["台北", "新北", "新竹", "台中", "台南", "高雄", "其他"]
-    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "台鐵","飛機", "派車", "其他"]
+    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "台鐵", "飛機", "派車", "其他"]
 
     details_rows = form.get("details") or []
     if not isinstance(details_rows, list) or not details_rows:
@@ -661,6 +663,7 @@ def render_form(actor: Actor) -> None:
     pdf_bytes: bytes | None = None
 
     with st.form("travel_main_form", clear_on_submit=False):
+        time_options = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30)]
         c1, c2, c3 = st.columns(3)
         form_date_val = c1.date_input("填寫日期", value=datetime.fromisoformat(str(form.get("form_date", date.today().isoformat()))).date())
         traveler_val = c2.selectbox("出差人", traveler_options, index=traveler_options.index(form.get("traveler", actor.name)) if form.get("traveler", actor.name) in traveler_options else 0)
@@ -691,9 +694,42 @@ def render_form(actor: Actor) -> None:
             dest_other = st.text_input("其他目的地", value=form.get("destination_location", "") if form.get("destination_location", "") not in destination_options else "")
 
         purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
-        d1, d2 = st.columns(2)
-        start_val = d1.date_input("起始日期", value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date())
-        end_val = d2.date_input("結束日期", value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date())
+        d1, d2, d3, d4, d5 = st.columns([1.2, 0.8, 1.2, 0.8, 1.0])
+
+        start_val = d1.date_input(
+            "起始日期",
+            value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date(),
+        )
+
+        start_time_current = str(form.get("start_time", "09:00") or "09:00").strip()
+        if start_time_current not in time_options:
+            start_time_current = "09:00"
+        start_time_val = d2.selectbox(
+            "起始時間",
+            time_options,
+            index=time_options.index(start_time_current),
+        )
+
+        end_val = d3.date_input(
+            "結束日期",
+            value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date(),
+        )
+
+        end_time_current = str(form.get("end_time", "17:00") or "17:00").strip()
+        if end_time_current not in time_options:
+            end_time_current = "17:00"
+        end_time_val = d4.selectbox(
+            "結束時間",
+            time_options,
+            index=time_options.index(end_time_current),
+        )
+
+        estimated_cost_val = d5.number_input(
+            "預估總金額",
+            min_value=0,
+            step=1,
+            value=int(form.get("estimated_cost", form.get("estimated_total_cost", 0)) or 0),
+        )
 
         transport_val = st.multiselect("交通方式", transport_opts, default=[x for x in form.get("transport_options", []) if x in transport_opts])
         tf1, tf2, tf3, tf4 = st.columns(4)
@@ -751,12 +787,15 @@ def render_form(actor: Actor) -> None:
             "destination_location": dest_other if dest_choice == "其他" else dest_choice,
             "location": " → ".join([x for x in [(dep_other if dep_choice == "其他" else dep_choice), (dest_other if dest_choice == "其他" else dest_choice)] if x]),
             "start_date": start_val.isoformat(),
+            "start_time": start_time_val,
             "end_date": end_val.isoformat(),
+            "end_time": end_time_val,
             "transport_options": list(transport_val),
             "private_car_km": safe_int(private_km_val) if "私車公用" in transport_val else 0,
             "private_car_plate": private_plate_val if "私車公用" in transport_val else "",
             "official_car_plate": official_plate_val if "公務車" in transport_val else "",
             "other_transport": other_transport_val if "其他" in transport_val else "",
+            "estimated_cost": estimated_cost_val,
             "details": edited_df.fillna("").to_dict(orient="records"),
             "attachment_files": _coerce_meta_list(form.get("attachment_files")),
             "signature_file": _coerce_meta_dict(form.get("signature_file")),
