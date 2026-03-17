@@ -32,6 +32,7 @@ from cache_utils import (
     archive_deleted_record,
     load_deleted_archive_rows,
     mark_deleted_archive_restored,
+    remove_pending_sync_item,
 )
 from pdf_gen import build_pdf_bytes, merge_expense_pdf_with_attachments
 from shared_plan_options import get_shared_plan_code_options
@@ -40,6 +41,7 @@ from sync_engine import build_master_dataframe, sync_pending_events
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
+EXPENSE_ATTACHMENTS_ROOT_URL = "https://drive.google.com/drive/folders/1Hh6JFu62PPVU6rCcQ5bV6NEh0VsGaEcv?usp=sharing"
 
 
 EXPENSE_WIDGET_KEYS = {
@@ -371,6 +373,49 @@ def _invalidate_expense_master(actor: Optional[Actor]) -> None:
         st.session_state.pop(suffix, None)
 
 
+def _expense_pending_items(owner_email: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for item in load_pending_sync(owner_email) or []:
+        payload = dict(item.get("payload") or {})
+        system_type = str(payload.get("system_type") or ("travel" if "travel" in str(item.get("operation", "")).lower() else "expense")).lower()
+        if system_type == "expense":
+            items.append(item)
+    return items
+
+
+def _expense_raw_pending_count(owner_email: str) -> int:
+    rows = []
+    for item in _expense_pending_items(owner_email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        needs_sync = bool(payload.get("needs_sync", True))
+        if needs_sync and sync_status in {"pending", "failed", "conflict"}:
+            rows.append(item)
+    return len(rows)
+
+
+def _cleanup_stale_expense_pending(actor: Actor) -> int:
+    report = st.session_state.get("expense_sync_report", {}) or {}
+    raw_pending = _expense_raw_pending_count(actor.email)
+    report_pending = int(report.get("pending_count", 0) or 0)
+    cloud_online = bool(report.get("cloud_online", False))
+    if not cloud_online or raw_pending <= report_pending:
+        return 0
+    removed = 0
+    for item in _expense_pending_items(actor.email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        if sync_status == "conflict":
+            continue
+        event_id = str(item.get("event_id") or payload.get("event_id") or "").strip()
+        record_id = str(payload.get("record_id") or "").strip()
+        if event_id:
+            removed += remove_pending_sync_item(actor.email, event_id=event_id, system_type="expense")
+        elif record_id:
+            removed += remove_pending_sync_item(actor.email, record_id=record_id, system_type="expense")
+    return removed
+
+
 def _queue_and_try_sync_expense(actor: Actor, operation: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
     payload = dict(payload or {})
     payload['system_type'] = 'expense'
@@ -546,9 +591,13 @@ def render_sync_status_sidebar_expense(current_user_email: str) -> None:
 def render_top_sync_notice_expense(current_user_email: str) -> None:
     if not current_user_email:
         return
-    pending_count = count_pending_sync(current_user_email, system_type="expense")
+    actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
+    _, report = _load_expense_master(actor, force_refresh=False)
+    pending_count = int(report.get("pending_count", 0) or 0)
     if pending_count > 0:
         st.info(f"提醒：你有 {pending_count} 筆支出資料尚未同步到雲端。")
+    elif _expense_raw_pending_count(current_user_email) != pending_count:
+        st.info("提醒：偵測到本機待同步殘留，已建議清理。")
 
 
 def option_values(grouped: Dict[str, List[str]], option_type: str, include_other: bool = True) -> List[str]:
@@ -1347,7 +1396,7 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
         row_cols[7].markdown(f'<div class="exp-table-cell">{safe_int(rec.get("amount_total")):,}</div>', unsafe_allow_html=True)
         row_cols[8].markdown(f'<div class="exp-table-cell">{str(rec.get("purpose_desc", ""))}</div>', unsafe_allow_html=True)
         row_cols[9].markdown(f'<div class="exp-table-cell">{updated_text}</div>', unsafe_allow_html=True)
-        action_cols = row_cols[10].columns(5)
+        action_cols = row_cols[10].columns(6)
         pdf_payload = _record_to_pdf_payload(rec, actor)
         pdf_bytes = _prepare_pdf_bytes(pdf_payload)
         if action_cols[0].button("編輯", key=f"{key_prefix}_edit_{record_id}", use_container_width=True):
