@@ -597,29 +597,48 @@ def render_form(actor: Actor) -> None:
         traveler_val = c2.selectbox("出差人", traveler_options, index=traveler_options.index(form.get("traveler", actor.name)) if form.get("traveler", actor.name) in traveler_options else 0)
         employee_val = c3.selectbox("工號", employee_options, index=employee_options.index(form.get("employee_no", actor.employee_no)) if form.get("employee_no", actor.employee_no) in employee_options else 0)
 
-        c4, c5, c6, c7 = st.columns(4)
+        c4, c6, c7 = st.columns(3)
+
         current_project = str(form.get("project_id", "")).strip()
         project_select_options = list(project_options) if list(project_options) else [""]
         if "其他" not in project_select_options:
             project_select_options.append("其他")
         project_select_default = current_project if current_project in project_select_options else ("其他" if current_project else project_select_options[0])
-        project_choice = c4.selectbox("計畫編號", project_select_options, index=project_select_options.index(project_select_default))
-        budget_val = c5.selectbox("預算來源", budget_options, index=budget_options.index(form.get("budget_source", "")) if form.get("budget_source", "") in budget_options else 0)
+        
+        project_choice = c4.selectbox(
+            "計畫編號",
+            project_select_options,
+            index=project_select_options.index(project_select_default)
+        )
+        
+        from_val = c6.selectbox(
+            "出發地",
+            from_options,
+            index=from_options.index(form.get("from_location", "")) if form.get("from_location", "") in from_options else 0
+        )
+        
+        to_val = c7.selectbox(
+            "目的地",
+            to_options,
+            index=to_options.index(form.get("to_location", "")) if form.get("to_location", "") in to_options else 0
+        )
+        
         project_other_val = ""
         if project_choice == "其他":
-            project_other_val = st.text_input("計畫編號（其他）", value=current_project if current_project not in project_options else "")
-
-        dep_default = form.get("departure_location", "台南") if form.get("departure_location", "台南") in departure_options else "其他"
-        dest_default = form.get("destination_location", "台北") if form.get("destination_location", "台北") in destination_options else "其他"
-        dep_choice = c6.selectbox("出發地", departure_options, index=departure_options.index(dep_default))
-        dest_choice = c7.selectbox("目的地", destination_options, index=destination_options.index(dest_default))
-
-        dep_other = ""
-        dest_other = ""
-        if dep_choice == "其他":
-            dep_other = st.text_input("其他出發地", value=form.get("departure_location", "") if form.get("departure_location", "") not in departure_options else "")
-        if dest_choice == "其他":
-            dest_other = st.text_input("其他目的地", value=form.get("destination_location", "") if form.get("destination_location", "") not in destination_options else "")
+            project_other_val = st.text_input(
+                "計畫編號（其他）",
+                value=current_project if current_project not in project_options else ""
+            )
+        
+        from_other_val = st.text_input(
+            "其他出發地(選填)",
+            value=str(form.get("from_location_other", ""))
+        )
+        
+        to_other_val = st.text_input(
+            "其他目的地(選填)",
+            value=str(form.get("to_location_other", ""))
+        )
 
         purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
         d1, d2 = st.columns(2)
