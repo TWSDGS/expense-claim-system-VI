@@ -641,7 +641,11 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
   clean.record_id = (clean.record_id || '').trim();
   clean.status = finalStatus;
   clean.form_type = system.formType;
-  clean.owner_name = clean.owner_name || actor.name || '';
+  // Ensure owner_name is a person's name, not a role or other system value
+  clean.owner_name = String(clean.owner_name || clean.employee_name || actor.name || '').trim();
+  if (!clean.owner_name) {
+    clean.owner_name = actor.name || '';
+  }
   clean.user_email = normalizeEmail_(clean.user_email || actor.email || '');
   clean.actor_role = actor.role || 'user';
   if (!clean.created_at) clean.created_at = (existingRecord && existingRecord.created_at) || now;
@@ -675,6 +679,8 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
     clean.project_manager_name = clean.project_manager_name || '';
     clean.department_manager_name = clean.department_manager_name || '';
     clean.accountant_name = clean.accountant_name || '';
+    // Ensure employee_name is preserved for owner_name fallback
+    clean.employee_name = clean.employee_name || '';
     return clean;
   }
 
