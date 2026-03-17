@@ -28,6 +28,7 @@ from cache_utils import (
     delete_local_travel_record,
     load_deleted_archive_rows,
     mark_deleted_archive_restored,
+    remove_pending_sync_item,
 )
 import pdf_gen_travel
 from shared_plan_options import get_shared_plan_code_options
@@ -178,6 +179,7 @@ def default_form(actor: Actor) -> Dict[str, Any]:
         "project_id": "",
         "budget_source": "",
         "purpose": "",
+        "estimated_cost": 0,
         "departure_location": "台南",
         "destination_location": "台北",
         "start_date": date.today().isoformat(),
@@ -236,6 +238,26 @@ def _load_travel_master(actor: Actor, force_refresh: bool = False) -> Tuple[pd.D
             df['status'] = 'draft'
         if 'owner_name' not in df.columns:
             df['owner_name'] = df.get('traveler', '')
+        if 'project_id' not in df.columns and 'plan_code' in df.columns:
+            df['project_id'] = df.get('plan_code', '')
+        if 'project_id' in df.columns and 'plan_code' in df.columns:
+            df['project_id'] = df['project_id'].astype(str).where(df['project_id'].astype(str).str.strip() != '', df['plan_code'].astype(str))
+        if 'display_trip_date' not in df.columns:
+            if 'start_date' in df.columns:
+                df['display_trip_date'] = df.get('start_date', '')
+            elif 'trip_date_start' in df.columns:
+                df['display_trip_date'] = df.get('trip_date_start', '')
+            else:
+                df['display_trip_date'] = df.get('form_date', '')
+        if 'amount_total' not in df.columns:
+            df['amount_total'] = 0
+        if 'estimated_cost' not in df.columns and 'estimated_total_cost' in df.columns:
+            df['estimated_cost'] = df.get('estimated_total_cost', 0)
+        if 'estimated_total_cost' not in df.columns and 'estimated_cost' in df.columns:
+            df['estimated_total_cost'] = df.get('estimated_cost', 0)
+        df['amount_total'] = pd.to_numeric(df.get('amount_total', 0), errors='coerce').fillna(0)
+        est_series = pd.to_numeric(df.get('estimated_cost', 0), errors='coerce').fillna(0) if 'estimated_cost' in df.columns else 0
+        df['amount_total'] = df['amount_total'].where(df['amount_total'] > 0, est_series)
     st.session_state[cache_key] = (df, report)
     st.session_state['travel_sync_report'] = report
     st.session_state['cloud_online_travel'] = bool(report.get('cloud_online', False))
@@ -247,6 +269,49 @@ def _invalidate_travel_master(actor: Actor | None) -> None:
         return
     for suffix in [f"travel_master_cache::{actor.email}::{actor.role}", f"travel_master_cache::{actor.email}::admin", f"travel_master_cache::{actor.email}::user"]:
         st.session_state.pop(suffix, None)
+
+
+def _travel_pending_items(owner_email: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for item in load_pending_sync(owner_email) or []:
+        payload = dict(item.get("payload") or {})
+        system_type = str(payload.get("system_type") or ("travel" if "travel" in str(item.get("operation", "")).lower() else "expense")).lower()
+        if system_type == "travel":
+            items.append(item)
+    return items
+
+
+def _travel_raw_pending_count(owner_email: str) -> int:
+    rows = []
+    for item in _travel_pending_items(owner_email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        needs_sync = bool(payload.get("needs_sync", True))
+        if needs_sync and sync_status in {"pending", "failed", "conflict"}:
+            rows.append(item)
+    return len(rows)
+
+
+def _cleanup_stale_travel_pending(actor: Actor) -> int:
+    report = st.session_state.get("travel_sync_report", {}) or {}
+    raw_pending = _travel_raw_pending_count(actor.email)
+    report_pending = int(report.get("pending_count", 0) or 0)
+    cloud_online = bool(report.get("cloud_online", False))
+    if not cloud_online or raw_pending <= report_pending:
+        return 0
+    removed = 0
+    for item in _travel_pending_items(actor.email):
+        payload = dict(item.get("payload") or {})
+        sync_status = str(item.get("sync_status") or payload.get("sync_status") or "pending").lower()
+        if sync_status == "conflict":
+            continue
+        event_id = str(item.get("event_id") or payload.get("event_id") or "").strip()
+        record_id = str(payload.get("record_id") or "").strip()
+        if event_id:
+            removed += remove_pending_sync_item(actor.email, event_id=event_id, system_type="travel")
+        elif record_id:
+            removed += remove_pending_sync_item(actor.email, record_id=record_id, system_type="travel")
+    return removed
 
 
 def _queue_and_try_sync_travel(actor: Actor, operation: str, payload: Dict[str, Any]) -> tuple[bool, str]:
@@ -331,26 +396,35 @@ def _render_deleted_archive_restore_travel(actor: Actor) -> None:
 def render_sync_status_sidebar_travel(current_user_email: str) -> None:
     if not current_user_email:
         return
-    pending_count = count_pending_sync(current_user_email, system_type="travel")
     st.sidebar.markdown("---")
     st.sidebar.subheader("雲端同步狀態")
-    cloud_online = st.session_state.get("cloud_online_travel", True)
+
+    actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
+    _, report = _load_travel_master(actor, force_refresh=False)
+    raw_pending_count = _travel_raw_pending_count(current_user_email)
+    report_pending_count = int(report.get("pending_count", 0) or 0)
+    stale_queue_detected = raw_pending_count != report_pending_count
+
+    cloud_online = bool(report.get("cloud_online", st.session_state.get("cloud_online_travel", True)))
+    st.session_state["cloud_online_travel"] = cloud_online
     if cloud_online:
         st.sidebar.success("雲端：已連線")
     else:
         st.sidebar.error("雲端：未連線")
-    if pending_count > 0:
-        st.sidebar.warning(f"你有 {pending_count} 筆出差資料尚未同步到雲端")
+
+    if report_pending_count > 0:
+        st.sidebar.warning(f"你有 {report_pending_count} 筆出差資料尚未同步到雲端")
     else:
         st.sidebar.success("你的出差資料皆已同步")
+
+    if stale_queue_detected:
+        st.sidebar.warning("偵測到本機待同步殘留，已建議清理")
 
     cloud_url = _get_cloud_excel_url()
     if cloud_url:
         st.sidebar.link_button("開啟雲端表單", cloud_url, use_container_width=True)
     st.sidebar.link_button("開啟附件雲端資料夾", TRAVEL_ATTACHMENTS_ROOT_URL, use_container_width=True)
 
-    actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
-    _load_travel_master(actor, force_refresh=False)
     draft_cloud_df, submitted_cloud_df = _split_travel_export_frames(actor)
     save_cloud_backup_excel({"申請列表": submitted_cloud_df, "草稿列表": draft_cloud_df}, filename="travel_cloud_backup.xlsx")
     st.sidebar.download_button(
@@ -362,11 +436,10 @@ def render_sync_status_sidebar_travel(current_user_email: str) -> None:
         key="travel_sidebar_download_excel",
     )
 
-    _render_deleted_archive_restore_travel(get_current_actor() or Actor(name="", email=current_user_email, role="user"))
+    _render_deleted_archive_restore_travel(actor)
 
-    report = st.session_state.get('travel_sync_report', {}) or {}
-    st.sidebar.caption(f"master={report.get('master_count', 0)}｜cloud={report.get('cloud_count', 0)}｜pending={report.get('pending_count', 0)}")
-    if report.get('cloud_count', 0) != report.get('master_count', 0) and report.get('pending_count', 0) == 0:
+    st.sidebar.caption(f"master={report.get('master_count', 0)}｜cloud={report.get('cloud_count', 0)}｜pending={report_pending_count}")
+    if report.get('cloud_count', 0) != report.get('master_count', 0) and report_pending_count == 0:
         st.sidebar.warning('偵測到雲端與前端筆數不一致，建議重新同步或重新整理。')
 
     if st.sidebar.button("立即同步出差資料", key="sync_travel_now_btn", use_container_width=True):
@@ -374,12 +447,24 @@ def render_sync_status_sidebar_travel(current_user_email: str) -> None:
             sync_actor = get_current_actor() or Actor(name='', email=current_user_email, role='user')
             result = sync_pending_events('travel', sync_actor, get_api())
             _invalidate_travel_master(sync_actor)
-            _load_travel_master(sync_actor, force_refresh=True)
+            _, report = _load_travel_master(sync_actor, force_refresh=True)
             st.session_state['cloud_online_travel'] = result.get('failed', 0) == 0
-            if result.get('synced', 0) == 0 and result.get('failed', 0) == 0:
-                st.sidebar.info("目前沒有待同步的出差資料。")
+            cleanup_removed = 0
+            if result.get('failed', 0) == 0 and result.get('conflicts', 0) == 0:
+                cleanup_removed = _cleanup_stale_travel_pending(sync_actor)
+                if cleanup_removed:
+                    _invalidate_travel_master(sync_actor)
+                    _, report = _load_travel_master(sync_actor, force_refresh=True)
+            if result.get('synced', 0) == 0 and result.get('failed', 0) == 0 and report.get('pending_count', 0) == 0:
+                msg = "目前沒有待同步的出差資料。"
+                if cleanup_removed:
+                    msg += f" 已清理 {cleanup_removed} 筆本機待同步殘留。"
+                st.sidebar.info(msg)
             elif result.get('failed', 0) == 0:
-                st.sidebar.success(f"同步完成：{result.get('synced', 0)} 筆")
+                msg = f"同步完成：{result.get('synced', 0)} 筆"
+                if cleanup_removed:
+                    msg += f"；另已清理 {cleanup_removed} 筆本機待同步殘留"
+                st.sidebar.success(msg)
             else:
                 st.sidebar.warning(f"同步完成：成功 {result.get('synced', 0)} 筆，失敗 {result.get('failed', 0)} 筆")
         except Exception as e:
@@ -390,9 +475,13 @@ def render_sync_status_sidebar_travel(current_user_email: str) -> None:
 def render_top_sync_notice_travel(current_user_email: str) -> None:
     if not current_user_email:
         return
-    pending_count = count_pending_sync(current_user_email, system_type="travel")
+    actor = get_current_actor() or Actor(name="", email=current_user_email, role="user")
+    _, report = _load_travel_master(actor, force_refresh=False)
+    pending_count = int(report.get("pending_count", 0) or 0)
     if pending_count > 0:
         st.info(f"提醒：你有 {pending_count} 筆出差資料尚未同步到雲端。")
+    elif _travel_raw_pending_count(current_user_email) != pending_count:
+        st.info("提醒：偵測到本機待同步殘留，已建議清理。")
 
 
 def _upload_file_to_drive(actor: Actor, up, category: str, record_id: str = "") -> Dict[str, Any]:
@@ -529,34 +618,40 @@ def render_form(actor: Actor) -> None:
         traveler_val = c2.selectbox("出差人", traveler_options, index=traveler_options.index(form.get("traveler", actor.name)) if form.get("traveler", actor.name) in traveler_options else 0)
         employee_val = c3.selectbox("工號", employee_options, index=employee_options.index(form.get("employee_no", actor.employee_no)) if form.get("employee_no", actor.employee_no) in employee_options else 0)
 
-        c4, c5, c6, c7 = st.columns(4)
+        c4, c6, c7 = st.columns(3)
         current_project = str(form.get("project_id", "")).strip()
         project_select_options = list(project_options) if list(project_options) else [""]
         if "其他" not in project_select_options:
             project_select_options.append("其他")
         project_select_default = current_project if current_project in project_select_options else ("其他" if current_project else project_select_options[0])
         project_choice = c4.selectbox("計畫編號", project_select_options, index=project_select_options.index(project_select_default))
-        budget_val = c5.selectbox("預算來源", budget_options, index=budget_options.index(form.get("budget_source", "")) if form.get("budget_source", "") in budget_options else 0)
         project_other_val = ""
         if project_choice == "其他":
             project_other_val = st.text_input("計畫編號（其他）", value=current_project if current_project not in project_options else "")
 
-        dep_default = form.get("departure_location", "台南") if form.get("departure_location", "台南") in departure_options else "其他"
-        dest_default = form.get("destination_location", "台北") if form.get("destination_location", "台北") in destination_options else "其他"
+        dep_current = str(form.get("departure_location", "台南") or "台南").strip()
+        dest_current = str(form.get("destination_location", "台北") or "台北").strip()
+        dep_default = dep_current if dep_current in departure_options else "其他"
+        dest_default = dest_current if dest_current in destination_options else "其他"
         dep_choice = c6.selectbox("出發地", departure_options, index=departure_options.index(dep_default))
         dest_choice = c7.selectbox("目的地", destination_options, index=destination_options.index(dest_default))
 
-        dep_other = ""
-        dest_other = ""
-        if dep_choice == "其他":
-            dep_other = st.text_input("其他出發地", value=form.get("departure_location", "") if form.get("departure_location", "") not in departure_options else "")
-        if dest_choice == "其他":
-            dest_other = st.text_input("其他目的地", value=form.get("destination_location", "") if form.get("destination_location", "") not in destination_options else "")
+        dep_other_default = str(form.get("from_location_other", "") or "").strip()
+        if not dep_other_default and dep_current not in departure_options:
+            dep_other_default = dep_current
+        dest_other_default = str(form.get("to_location_other", "") or "").strip()
+        if not dest_other_default and dest_current not in destination_options:
+            dest_other_default = dest_current
+
+        other_col1, other_col2 = st.columns(2)
+        dep_other = other_col1.text_input("其他出發地(選填)", value=dep_other_default)
+        dest_other = other_col2.text_input("其他目的地(選填)", value=dest_other_default)
 
         purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
-        d1, d2 = st.columns(2)
+        d1, d2, d3 = st.columns(3)
         start_val = d1.date_input("起始日期", value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date())
         end_val = d2.date_input("結束日期", value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date())
+        estimated_cost_val = d3.number_input("預估總金額", min_value=0, step=1, value=int(form.get("estimated_cost", form.get("estimated_total_cost", 0)) or 0))
 
         transport_val = st.multiselect("交通方式", transport_opts, default=[x for x in form.get("transport_options", []) if x in transport_opts])
         tf1, tf2, tf3, tf4 = st.columns(4)
@@ -608,11 +703,13 @@ def render_form(actor: Actor) -> None:
             "traveler": traveler_val,
             "employee_no": employee_val,
             "project_id": project_other_val.strip() if project_choice == "其他" else project_choice,
-            "budget_source": budget_val,
+            "budget_source": str(form.get("budget_source", "")),
             "purpose": purpose_val,
-            "departure_location": dep_other if dep_choice == "其他" else dep_choice,
-            "destination_location": dest_other if dest_choice == "其他" else dest_choice,
-            "location": " → ".join([x for x in [(dep_other if dep_choice == "其他" else dep_choice), (dest_other if dest_choice == "其他" else dest_choice)] if x]),
+            "departure_location": dep_other.strip() if dep_choice == "其他" and dep_other.strip() else dep_choice,
+            "destination_location": dest_other.strip() if dest_choice == "其他" and dest_other.strip() else dest_choice,
+            "from_location_other": dep_other.strip(),
+            "to_location_other": dest_other.strip(),
+            "location": " → ".join([x for x in [(dep_other.strip() if dep_choice == "其他" and dep_other.strip() else dep_choice), (dest_other.strip() if dest_choice == "其他" and dest_other.strip() else dest_choice)] if x]),
             "start_date": start_val.isoformat(),
             "end_date": end_val.isoformat(),
             "transport_options": list(transport_val),
@@ -620,6 +717,8 @@ def render_form(actor: Actor) -> None:
             "private_car_plate": private_plate_val if "私車公用" in transport_val else "",
             "official_car_plate": official_plate_val if "公務車" in transport_val else "",
             "other_transport": other_transport_val if "其他" in transport_val else "",
+            "estimated_cost": int(estimated_cost_val or 0),
+            "estimated_total_cost": int(estimated_cost_val or 0),
             "details": edited_df.fillna("").to_dict(orient="records"),
             "attachment_files": list(form.get("attachment_files", []) or []),
             "signature_file": dict(form.get("signature_file", {}) or {}),
@@ -632,6 +731,8 @@ def render_form(actor: Actor) -> None:
         payload["lodging_fee_total"] = int(pd.Series([safe_int(x.get("住宿費", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
         payload["other_fee_total"] = int(pd.Series([safe_int(x.get("其它", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
         payload["amount_total"] = payload["transport_fee_total"] + payload["misc_fee_total"] + payload["lodging_fee_total"] + payload["other_fee_total"]
+        if int(payload.get("amount_total", 0) or 0) <= 0 and int(payload.get("estimated_cost", 0) or 0) > 0:
+            payload["amount_total"] = int(payload.get("estimated_cost", 0) or 0)
 
         if save_draft or submit_final or make_pdf:
             payload = persist_uploads(actor, payload, attach_uploads, signature_upload)
@@ -842,19 +943,23 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
         cols[0].write(rec.get("record_id", ""))
         cols[1].write(rec.get("status", ""))
         cols[2].write(get_sync_status_label(rec))
-        cols[3].write(str(rec.get("form_date", ""))[:10])
+        display_date = str(rec.get("display_trip_date") or rec.get("start_date") or rec.get("trip_date_start") or rec.get("form_date") or "")[:10]
+        cols[3].write(display_date)
         cols[4].write(rec.get("owner_name", "") or rec.get("traveler", ""))
-        cols[5].write(rec.get("project_id", ""))
-        cols[6].write(f"{safe_int(rec.get('amount_total')):,}")
+        cols[5].write(rec.get("project_id", "") or rec.get("plan_code", ""))
+        amount_display = safe_int(rec.get('amount_total', 0)) or safe_int(rec.get('estimated_cost', 0))
+        cols[6].write(f"{amount_display:,}")
         cols[7].write(str(rec.get("updated_at", ""))[:19])
         actions = cols[8].columns(6)
         record_id = str(rec.get("record_id") or "")
         owner_email = str(rec.get("user_email") or actor.email or "").strip().lower()
         if actions[0].button("編輯", key=f"{key_prefix}_edit_{rec.get('record_id')}"):
             load_into_form(actor, rec, as_copy=False)
+            st.session_state["travel_page"] = "new"
             st.rerun()
         if actions[1].button("複製", key=f"{key_prefix}_copy_{rec.get('record_id')}"):
             load_into_form(actor, rec, as_copy=True)
+            st.session_state["travel_page"] = "new"
             st.rerun()
         pdf_bytes = _build_pdf(actor, rec)
         actions[2].download_button("下載", data=pdf_bytes, file_name=f"出差報帳_{rec.get('record_id') or 'preview'}.pdf", mime="application/pdf", key=f"{key_prefix}_dl_{rec.get('record_id')}")
