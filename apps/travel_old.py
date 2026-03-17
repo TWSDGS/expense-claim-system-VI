@@ -654,7 +654,7 @@ def render_form(actor: Actor) -> None:
     budget_options = _option_candidates(grouped, "budget_source") or [""]
     departure_options = ["台南", "台中", "其他"]
     destination_options = ["台北", "新北", "新竹", "台中", "台南", "高雄", "其他"]
-    transport_opts = ["公務車", "計程車", "私車公用", "高鐵",  "台鐵", "飛機", "派車", "其他", "停車費", "過路費"]
+    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "台鐵",  "飛機", "派車", "其他", "停車費", "過路費"]
 
     details_rows = form.get("details") or []
     if not isinstance(details_rows, list) or not details_rows:
@@ -1139,7 +1139,7 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
                     refresh_runtime_cache(actor)
                     _invalidate_travel_master(actor)
                     _load_travel_master(actor, force_refresh=True)
-                    
+
                     if ok:
                         st.success(f"{record_id} 已從雲端移除。")
                     else:
