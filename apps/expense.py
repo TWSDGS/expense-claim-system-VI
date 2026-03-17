@@ -1513,7 +1513,7 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
                     refresh_runtime_cache(actor)
                     _invalidate_expense_master(actor)
                     _load_expense_master(actor, force_refresh=True)
-                    
+
                     if ok:
                         st.success(f"{record_id} 已從雲端移除。")
                     else:
