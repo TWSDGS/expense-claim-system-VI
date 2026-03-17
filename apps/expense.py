@@ -1499,7 +1499,7 @@ def render_record_list_page(df: pd.DataFrame, title: str, source: str, grouped_o
                 st.session_state.pop(confirm_key, None)
                 st.info("已取消移除。")
                 st.rerun()
-        elif action_cols[5].button("移除單筆資料", key=f"{key_prefix}_hard_delete_{record_id}", disabled=not can_hard_delete(actor), use_container_width=True):
+        elif action_cols[5].button("移除", key=f"{key_prefix}_hard_delete_{record_id}", disabled=not can_hard_delete(actor), use_container_width=True):
             st.session_state[confirm_key] = True
             st.rerun()
 
