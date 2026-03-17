@@ -670,7 +670,7 @@ def render_form(actor: Actor) -> None:
         employee_val = c3.selectbox("工號", employee_options, index=employee_options.index(form.get("employee_no", actor.employee_no)) if form.get("employee_no", actor.employee_no) in employee_options else 0)
 
         # 第二行：計畫編號、其他計畫編號(選填)、預估總金額
-        r2c1, r2c2, r2c3 = st.columns([1.3, 1.4, 1.1])
+        r2c1, r2c2, r2c3 = st.columns([1.3, 1.3, 1.2])
 
         current_project = str(form.get("project_id", "")).strip()
         project_select_options = list(project_options) if list(project_options) else [""]
