@@ -670,8 +670,8 @@ def default_form(actor: Actor, defaults: Dict[str, Any]) -> Dict[str, Any]:
         "plan_code": defaults.get("default_plan_code", ""),
         "purpose_desc": "",
         "payment_target": "employee",
-        "employee_name": "",
-        "employee_no": "",
+        "employee_name": actor.name or "",
+        "employee_no": actor.employee_no or "",
         "advance_amount": 0,
         "offset_amount": 0,
         "balance_refund_amount": 0,
@@ -732,16 +732,39 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     plan_val = str(d.get("plan_code", "")).strip()
     st.session_state.setdefault(keys["plan_code"], plan_val if plan_val in plan_opts else "其他")
     st.session_state.setdefault(keys["plan_code_other"], "" if plan_val in plan_opts else plan_val)
+    actor_name = str(st.session_state.get("actor_name", "")).strip()
+    actor_employee_no = str(st.session_state.get("actor_employee_no", "")).strip()
     emp_name_opts = option_values(grouped_options, "employee_name")
     emp_no_opts = option_values(grouped_options, "employee_no")
-    emp_name = str(d.get("employee_name", "")).strip()
-    emp_no = str(d.get("employee_no", "")).strip()
+    
+    # 若登入者不在選單中，仍把登入者插入選單最前面，確保可作為預設值
+    if actor_name and actor_name not in emp_name_opts:
+        emp_name_opts = [actor_name] + emp_name_opts
+    if actor_employee_no and actor_employee_no not in emp_no_opts:
+        emp_no_opts = [actor_employee_no] + emp_no_opts
+    
+    emp_name = str(d.get("employee_name", "")).strip() or actor_name
+    emp_no = str(d.get("employee_no", "")).strip() or actor_employee_no
+    
     first_emp_name = emp_name_opts[0] if emp_name_opts else ""
     first_emp_no = emp_no_opts[0] if emp_no_opts else ""
-    st.session_state.setdefault(keys["employee_name"], emp_name if emp_name in emp_name_opts else (first_emp_name if emp_name == "" else "其他"))
-    st.session_state.setdefault(keys["employee_name_other"], "" if emp_name in emp_name_opts else emp_name)
-    st.session_state.setdefault(keys["employee_no"], emp_no if emp_no in emp_no_opts else (first_emp_no if emp_no == "" else "其他"))
-    st.session_state.setdefault(keys["employee_no_other"], "" if emp_no in emp_no_opts else emp_no)
+    
+    st.session_state.setdefault(
+        keys["employee_name"],
+        emp_name if emp_name in emp_name_opts else (first_emp_name if emp_name == "" else "其他")
+    )
+    st.session_state.setdefault(
+        keys["employee_name_other"],
+        "" if emp_name in emp_name_opts else emp_name
+    )
+    st.session_state.setdefault(
+        keys["employee_no"],
+        emp_no if emp_no in emp_no_opts else (first_emp_no if emp_no == "" else "其他")
+    )
+    st.session_state.setdefault(
+        keys["employee_no_other"],
+        "" if emp_no in emp_no_opts else emp_no
+    )
 
 
 def _reset_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, List[str]]) -> None:
