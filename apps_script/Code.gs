@@ -58,6 +58,7 @@ const SHEET_SCHEMAS = {
     ['balance_refund_amount', '餘額退回'], ['supplement_amount', '應補差額'],
     ['vendor_enabled', '逕付廠商_是否勾選'], ['vendor_name', '逕付廠商'], ['vendor_address', '地址'], ['vendor_payee_name', '收款人'],
     ['receipt_count', '憑證編號'], ['amount_untaxed', '未稅金額'], ['tax_mode', '稅額方式'], ['tax_amount', '稅額'], ['amount_total', '金額'],
+    ['attachments', '附件'], ['signature_file', '數位簽名檔'],
     ['handler_name', '經辦人'], ['project_manager_name', '計畫主管'], ['department_manager_name', '部門主管'], ['accountant_name', '會計'],
     ['department', '部門'], ['note_public', '備註'], ['remarks_internal', '內部備註'],
     ['owner_name', '擁有人'], ['user_email', '使用者Email'], ['actor_role', '角色'], ['source_system', '來源系統'],
@@ -73,6 +74,7 @@ const SHEET_SCHEMAS = {
     ['balance_refund_amount', '餘額退回'], ['supplement_amount', '應補差額'],
     ['vendor_enabled', '逕付廠商_是否勾選'], ['vendor_name', '逕付廠商'], ['vendor_address', '地址'], ['vendor_payee_name', '收款人'],
     ['receipt_count', '憑證編號'], ['amount_untaxed', '未稅金額'], ['tax_mode', '稅額方式'], ['tax_amount', '稅額'], ['amount_total', '金額'],
+    ['attachments', '附件'], ['signature_file', '數位簽名檔'],
     ['handler_name', '經辦人'], ['project_manager_name', '計畫主管'], ['department_manager_name', '部門主管'], ['accountant_name', '會計'],
     ['department', '部門'], ['note_public', '備註'], ['remarks_internal', '內部備註'],
     ['owner_name', '擁有人'], ['user_email', '使用者Email'], ['actor_role', '角色'], ['source_system', '來源系統'],
@@ -84,7 +86,7 @@ const SHEET_SCHEMAS = {
     ['record_id', '表單編號'], ['status', '狀態'], ['form_type', '表單類型'], ['form_date', '填寫日期'],
     ['employee_name', '出差人'], ['employee_no', '員工編號'], ['department', '部門'], ['plan_code', '計畫代號'],
     ['trip_purpose', '出差事由'], ['from_location', '出發地'], ['to_location', '目的地'],
-    ['trip_date_start', '起始日期'], ['trip_time_start', '起始時間'], ['trip_date_end', '結束日期'], ['trip_time_end', '結束時間'], ['trip_days', '共天'],
+    ['trip_date_start', '起始日期'], ['trip_time_start', '起始時間'], ['start_time', '起始時間_原始'], ['trip_date_end', '結束日期'], ['trip_time_end', '結束時間'], ['end_time', '結束時間_原始'], ['trip_days', '共天'],
     ['transport_tools', '交通方式'], ['transportation_type', '交通方式_字串'], ['gov_car_no', '公務車車號'], ['private_car_km', '私車公里數'], ['private_car_no', '私車車號'], ['other_transport_desc', '其他交通工具說明'],
     ['estimated_cost', '出差費預估'], ['expense_rows', '出差明細_JSON'], ['detail_dates', '出差明細_日期'], ['detail_routes', '出差明細_起訖地點'], ['detail_vehicle_types', '出差明細_車別'], ['detail_transport_fees', '出差明細_交通費'], ['detail_misc_fees', '出差明細_膳雜費'], ['detail_lodging_fees', '出差明細_住宿費'], ['detail_other_fees', '出差明細_其它'], ['detail_receipt_nos', '出差明細_單據編號'], ['amount_total', '合計'], ['amount_total_upper', '總計新台幣'],
     ['attachments', '附件'], ['signature_file', '數位簽名檔'],
@@ -270,12 +272,76 @@ function doPost(e) {
       case 'record_soft_delete': result = handleRecordSoftDelete_(body); break;
       case 'record_hard_delete': result = handleRecordHardDelete_(body); break;
       case 'record_restore': result = handleRecordRestore_(body); break;
+      case 'upload_drive_file': result = handleUploadDriveFile_(body); break;
+      case 'delete_drive_file': result = handleDeleteDriveFile_(body); break;
+      case 'get_drive_file_content': result = handleGetDriveFileContent_(body); break;
       default: result = err_('unknown action: ' + action, 'UNKNOWN_ACTION');
     }
     return jsonOutput_(result);
   } catch (error) {
     return jsonOutput_(err_(stringifyError_(error), 'SERVER_ERROR'));
   }
+}
+
+function handleUploadDriveFile_(body) {
+  const system = requireSystem_(body.system);
+  const actor = normalizeActor_(body.actor || {});
+  const payload = body.payload || {};
+  const filename = String(payload.filename || '').trim();
+  const contentBase64 = String(payload.content_base64 || '').trim();
+  const mimeType = String(payload.mime_type || 'application/octet-stream').trim() || 'application/octet-stream';
+  const category = String(payload.category || 'attachment').trim() || 'attachment';
+  const recordId = String(payload.record_id || '').trim();
+  const ownerEmail = normalizeEmail_(payload.owner_email || actor.email || '');
+
+  if (!filename) return err_('filename is required', 'VALIDATION_ERROR');
+  if (!contentBase64) return err_('content_base64 is required', 'VALIDATION_ERROR');
+
+  const bytes = Utilities.base64Decode(contentBase64);
+  const folder = getAttachmentCategoryFolder_(system, category);
+  const safeName = buildSafeDriveFilename_(recordId, filename);
+  const file = folder.createFile(bytes, safeName, mimeType);
+
+  const data = {
+    drive_file_id: file.getId(),
+    drive_url: file.getUrl(),
+    drive_folder_id: folder.getId(),
+    name: file.getName(),
+    filename: file.getName(),
+    mime_type: mimeType,
+    size: bytes.length,
+    category: category,
+    record_id: recordId,
+    owner_email: ownerEmail,
+    updated_at: nowIso_(),
+  };
+  return ok_('file uploaded', data);
+}
+
+function handleDeleteDriveFile_(body) {
+  const payload = body.payload || {};
+  const fileId = String(payload.drive_file_id || payload.file_id || '').trim();
+  if (!fileId) return err_('drive_file_id is required', 'VALIDATION_ERROR');
+  const file = DriveApp.getFileById(fileId);
+  file.setTrashed(true);
+  return ok_('file trashed', { drive_file_id: fileId, trashed: true });
+}
+
+function handleGetDriveFileContent_(body) {
+  const payload = body.payload || {};
+  const fileId = String(payload.drive_file_id || payload.file_id || '').trim();
+  if (!fileId) return err_('drive_file_id is required', 'VALIDATION_ERROR');
+  const file = DriveApp.getFileById(fileId);
+  const blob = file.getBlob();
+  const data = {
+    drive_file_id: fileId,
+    filename: file.getName(),
+    name: file.getName(),
+    mime_type: blob.getContentType(),
+    size: blob.getBytes().length,
+    content_base64: Utilities.base64Encode(blob.getBytes()),
+  };
+  return ok_('file content loaded', data);
 }
 
 function handleUsersList_(params) {
@@ -481,6 +547,39 @@ function processRecordWrite_(body, finalStatus) {
   } finally { lock.releaseLock(); }
 }
 
+function getDriveRootFolder_(system) {
+  const props = PropertiesService.getScriptProperties();
+  const propKey = 'DRIVE_ROOT_' + system.formType.toUpperCase();
+  const existingId = String(props.getProperty(propKey) || '').trim();
+  if (existingId) {
+    try {
+      return DriveApp.getFolderById(existingId);
+    } catch (e) {}
+  }
+
+  const rootName = system.formType === 'expense' ? 'expense-attachments' : 'travel-attachments';
+  const folder = findOrCreateFolderByName_(DriveApp.getRootFolder(), rootName);
+  props.setProperty(propKey, folder.getId());
+  return folder;
+}
+
+function getAttachmentCategoryFolder_(system, category) {
+  const root = getDriveRootFolder_(system);
+  return findOrCreateFolderByName_(root, String(category || 'attachment').trim() || 'attachment');
+}
+
+function findOrCreateFolderByName_(parentFolder, name) {
+  const it = parentFolder.getFoldersByName(name);
+  if (it.hasNext()) return it.next();
+  return parentFolder.createFolder(name);
+}
+
+function buildSafeDriveFilename_(recordId, filename) {
+  const base = String(filename || 'upload.bin').replace(/[\\\/:*?"<>|]+/g, '_').trim() || 'upload.bin';
+  if (!recordId) return base;
+  return recordId + '__' + base;
+}
+
 function readSheetObjects_(system, sheetName) {
   const sheet = getSheet_(system, sheetName);
   const lastRow = sheet.getLastRow();
@@ -574,6 +673,8 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
     clean.tax_amount = Math.round(Number(clean.tax_amount || 0));
     clean.amount_total = Math.round(Number(clean.amount_total || 0));
     clean.receipt_count = Math.round(Number(clean.receipt_count || 0));
+    clean.attachments = normalizeJsonText_(clean.attachments || clean.attachment_files || []);
+    clean.signature_file = normalizeJsonText_(clean.signature_file || '');
     clean.handler_name = clean.handler_name || '';
     clean.project_manager_name = clean.project_manager_name || '';
     clean.department_manager_name = clean.department_manager_name || '';
@@ -591,7 +692,9 @@ function sanitizeRecordForWrite_(system, payload, actor, finalStatus, existingRe
   clean.trip_date_start = normalizeDateText_(clean.trip_date_start || clean.start_date || '');
   clean.trip_date_end = normalizeDateText_(clean.trip_date_end || clean.end_date || '');
   clean.trip_time_start = clean.trip_time_start || clean.start_time || '';
+  clean.start_time = clean.start_time || clean.trip_time_start || '';
   clean.trip_time_end = clean.trip_time_end || clean.end_time || '';
+  clean.end_time = clean.end_time || clean.trip_time_end || '';
   clean.budget_source = clean.budget_source || '';
 
   const transportList = normalizeTransportList_(clean.transport_tools || clean.transport_mode || clean.transport_options || clean.transportation_type || []);
