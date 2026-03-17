@@ -651,9 +651,9 @@ def render_form(actor: Actor) -> None:
     employee_options = [str(r.get("employee_no", "")).strip() for r in users_rows if str(r.get("employee_no", "")).strip()] or [actor.employee_no]
     project_options = _option_candidates(grouped, "plan_code", "project_id") or [""]
     budget_options = _option_candidates(grouped, "budget_source") or [""]
-    departure_options = ["台南", "其他"]
+    departure_options = ["台南", "台中", "其他"]
     destination_options = ["台北", "新北", "新竹", "台中", "台南", "高雄", "其他"]
-    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "飛機", "派車", "其他"]
+    transport_opts = ["公務車", "計程車", "私車公用", "高鐵", "飛機", "派車", "其他", "停車費", "過路費"]
 
     details_rows = form.get("details") or []
     if not isinstance(details_rows, list) or not details_rows:
@@ -670,7 +670,7 @@ def render_form(actor: Actor) -> None:
         employee_val = c3.selectbox("工號", employee_options, index=employee_options.index(form.get("employee_no", actor.employee_no)) if form.get("employee_no", actor.employee_no) in employee_options else 0)
 
         # 第二行：計畫編號、其他計畫編號(選填)、預估總金額
-        r2c1, r2c2, r2c3 = st.columns([1.2, 1.6, 0.9])
+        r2c1, r2c2, r2c3 = st.columns([1.3, 1.4, 1.1])
 
         current_project = str(form.get("project_id", "")).strip()
         project_select_options = list(project_options) if list(project_options) else [""]
@@ -708,7 +708,7 @@ def render_form(actor: Actor) -> None:
         purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
 
         # 第四行：出發地、其他出發地(選填)、目的地、其他目的地(選填)
-        r4c1, r4c2, r4c3, r4c4 = st.columns([1, 1.2, 1, 1.2])
+        r4c1, r4c2, r4c3, r4c4 = st.columns([1.2, 1, 1.2, 1])
 
         dep_current = str(form.get("departure_location", "台南") or "台南").strip()
         dest_current = str(form.get("destination_location", "台北") or "台北").strip()
@@ -747,7 +747,7 @@ def render_form(actor: Actor) -> None:
         )
 
         # 第五行：起始日期、起始時間、結束日期、結束時間
-        r5c1, r5c2, r5c3, r5c4 = st.columns([1.2, 0.8, 1.2, 0.8])
+        r5c1, r5c2, r5c3, r5c4 = st.columns([1.2, 1, 1.2, 1])
 
         start_val = r5c1.date_input(
             "起始日期",
@@ -778,7 +778,7 @@ def render_form(actor: Actor) -> None:
         )
 
         # 第六行：交通方式、其他交通方式(選填)
-        r6c1, r6c2 = st.columns([1.4, 1.0])
+        r6c1, r6c2 = st.columns([1.6, 0.8])
 
         transport_val = r6c1.multiselect(
             "交通方式",
@@ -819,7 +819,7 @@ def render_form(actor: Actor) -> None:
                 "起訖地點": st.column_config.TextColumn("起訖地點"),
                 "車別": st.column_config.SelectboxColumn(
                     "車別",
-                    options=["", "高鐵", "台鐵", "客運", "捷運", "公車", "計程車", "私車公用", "公務車", "飛機", "船舶", "其他"],
+                    options=["", "高鐵", "台鐵", "客運", "捷運", "公車", "計程車", "私車公用", "公務車", "飛機", "船舶", "其他", "停車費", "過路費"],
                     required=False,
                 ),
                 "交通費": st.column_config.NumberColumn("交通費", min_value=0, step=1),
