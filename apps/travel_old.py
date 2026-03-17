@@ -1018,7 +1018,7 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
     if cur not in opts:
         cur = opts[0]
     status_filter = r1[0].selectbox("狀態", opts, index=opts.index(cur), key=f"{key_prefix}_status")
-    owner = r1[1].text_input("填表人包含", value=st.session_state.get(f"{key_prefix}_owner", ""), key=f"{key_prefix}_owner")
+    owner = r1[1].text_input("出差人包含", value=st.session_state.get(f"{key_prefix}_owner", ""), key=f"{key_prefix}_owner")
     plan = r1[2].text_input("計畫編號包含", value=st.session_state.get(f"{key_prefix}_plan", ""), key=f"{key_prefix}_plan")
     record = r1[3].text_input("表單ID", value=st.session_state.get(f"{key_prefix}_record", ""), key=f"{key_prefix}_record")
 
@@ -1048,7 +1048,11 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
     if status_filter != "all":
         filtered = filtered[filtered["status"] == status_filter]
     if owner.strip():
-        filtered = filtered[filtered["owner_name"].astype(str).str.contains(owner.strip(), case=False, na=False)]
+        # 優先篩選 traveler 欄位
+        if "traveler" in filtered.columns:
+            filtered = filtered[filtered["traveler"].astype(str).str.contains(owner.strip(), case=False, na=False)]
+        else:
+            filtered = filtered[filtered["owner_name"].astype(str).str.contains(owner.strip(), case=False, na=False)]
     if plan.strip():
         filtered = filtered[filtered["project_id_text"].str.contains(plan.strip(), case=False, na=False)]
     if record.strip():
@@ -1080,7 +1084,7 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
     total_all = sum(totals.values())
 
     h = st.columns([1.2, 0.8, 0.95, 1, 1, 1, 0.9, 1.2, 2.5])
-    for c, t in zip(h, ["表單ID", "狀態", "同步狀態", "日期", "填表人", "計畫編號", "總金額", "更新時間", "操作"]):
+    for c, t in zip(h, ["表單ID", "狀態", "同步狀態", "日期", "出差人", "計畫編號", "總金額", "更新時間", "操作"]):
         c.markdown(f"**{t}**")
     for _, row in page_df.iterrows():
         rec = row.to_dict()
@@ -1089,7 +1093,7 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
         cols[1].write(rec.get("status", ""))
         cols[2].write(get_sync_status_label(rec))
         cols[3].write(str(rec.get("form_date", ""))[:10])
-        cols[4].write(rec.get("owner_name", "") or rec.get("traveler", ""))
+        cols[4].write(rec.get("traveler", "") or rec.get("owner_name", ""))
         cols[5].write(rec.get("project_id", ""))
         cols[6].write(f"{safe_int(rec.get('amount_total')):,}")
         cols[7].write(str(rec.get("updated_at", ""))[:19])
