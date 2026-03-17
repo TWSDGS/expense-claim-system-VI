@@ -187,7 +187,6 @@ def default_form(actor: Actor) -> Dict[str, Any]:
         "private_car_plate": "",
         "official_car_plate": "",
         "other_transport": "",
-        "estimated_cost": 0,
         "details": [{"日期": date.today().isoformat(), "起訖地點": "", "車別": "", "交通費": 0, "膳雜費": 0, "住宿費": 0, "其它": 0, "單據編號": ""}],
         "attachment_files": [],
         "signature_file": {},
@@ -237,22 +236,6 @@ def _load_travel_master(actor: Actor, force_refresh: bool = False) -> Tuple[pd.D
             df['status'] = 'draft'
         if 'owner_name' not in df.columns:
             df['owner_name'] = df.get('traveler', '')
-        if 'project_id' not in df.columns or not df['project_id'].astype(str).str.strip().any():
-            if 'plan_code' in df.columns:
-                df['project_id'] = df.get('plan_code', '')
-        if 'amount_total' not in df.columns:
-            df['amount_total'] = df.get('estimated_cost', 0)
-        else:
-            amount_series = pd.to_numeric(df.get('amount_total', 0), errors='coerce').fillna(0)
-            est_series = pd.to_numeric(df.get('estimated_cost', 0), errors='coerce').fillna(0) if 'estimated_cost' in df.columns else 0
-            df['amount_total'] = amount_series.where(amount_series > 0, est_series)
-        if 'display_trip_date' not in df.columns:
-            if 'start_date' in df.columns:
-                df['display_trip_date'] = df.get('start_date', '')
-            elif 'trip_date_start' in df.columns:
-                df['display_trip_date'] = df.get('trip_date_start', '')
-            else:
-                df['display_trip_date'] = df.get('form_date', '')
     st.session_state[cache_key] = (df, report)
     st.session_state['travel_sync_report'] = report
     st.session_state['cloud_online_travel'] = bool(report.get('cloud_online', False))
@@ -571,10 +554,9 @@ def render_form(actor: Actor) -> None:
             dest_other = st.text_input("其他目的地", value=form.get("destination_location", "") if form.get("destination_location", "") not in destination_options else "")
 
         purpose_val = st.text_input("出差事由", value=str(form.get("purpose", "")))
-        d1, d2, d3 = st.columns(3)
+        d1, d2 = st.columns(2)
         start_val = d1.date_input("起始日期", value=datetime.fromisoformat(str(form.get("start_date", date.today().isoformat()))).date())
         end_val = d2.date_input("結束日期", value=datetime.fromisoformat(str(form.get("end_date", date.today().isoformat()))).date())
-        estimated_cost_val = d3.number_input("預估總金額", min_value=0, step=1, value=safe_int(form.get("estimated_cost", 0)))
 
         transport_val = st.multiselect("交通方式", transport_opts, default=[x for x in form.get("transport_options", []) if x in transport_opts])
         tf1, tf2, tf3, tf4 = st.columns(4)
@@ -638,7 +620,6 @@ def render_form(actor: Actor) -> None:
             "private_car_plate": private_plate_val if "私車公用" in transport_val else "",
             "official_car_plate": official_plate_val if "公務車" in transport_val else "",
             "other_transport": other_transport_val if "其他" in transport_val else "",
-            "estimated_cost": safe_int(estimated_cost_val),
             "details": edited_df.fillna("").to_dict(orient="records"),
             "attachment_files": list(form.get("attachment_files", []) or []),
             "signature_file": dict(form.get("signature_file", {}) or {}),
@@ -650,8 +631,7 @@ def render_form(actor: Actor) -> None:
         payload["misc_fee_total"] = int(pd.Series([safe_int(x.get("膳雜費", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
         payload["lodging_fee_total"] = int(pd.Series([safe_int(x.get("住宿費", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
         payload["other_fee_total"] = int(pd.Series([safe_int(x.get("其它", 0)) for x in payload["details"]]).sum()) if payload["details"] else 0
-        details_total = payload["transport_fee_total"] + payload["misc_fee_total"] + payload["lodging_fee_total"] + payload["other_fee_total"]
-        payload["amount_total"] = details_total if details_total > 0 else safe_int(estimated_cost_val)
+        payload["amount_total"] = payload["transport_fee_total"] + payload["misc_fee_total"] + payload["lodging_fee_total"] + payload["other_fee_total"]
 
         if save_draft or submit_final or make_pdf:
             payload = persist_uploads(actor, payload, attach_uploads, signature_upload)
@@ -862,22 +842,19 @@ def render_list(actor: Actor, title: str, statuses: List[str], key_prefix: str) 
         cols[0].write(rec.get("record_id", ""))
         cols[1].write(rec.get("status", ""))
         cols[2].write(get_sync_status_label(rec))
-        display_trip_date = rec.get("display_trip_date") or rec.get("start_date") or rec.get("trip_date_start") or rec.get("form_date", "")
-        cols[3].write(str(display_trip_date)[:10])
+        cols[3].write(str(rec.get("form_date", ""))[:10])
         cols[4].write(rec.get("owner_name", "") or rec.get("traveler", ""))
-        cols[5].write(rec.get("project_id", "") or rec.get("plan_code", ""))
-        cols[6].write(f"{safe_int(rec.get('amount_total', rec.get('estimated_cost', 0))):,}")
+        cols[5].write(rec.get("project_id", ""))
+        cols[6].write(f"{safe_int(rec.get('amount_total')):,}")
         cols[7].write(str(rec.get("updated_at", ""))[:19])
         actions = cols[8].columns(6)
         record_id = str(rec.get("record_id") or "")
         owner_email = str(rec.get("user_email") or actor.email or "").strip().lower()
         if actions[0].button("編輯", key=f"{key_prefix}_edit_{rec.get('record_id')}"):
             load_into_form(actor, rec, as_copy=False)
-            st.session_state["travel_page"] = "new"
             st.rerun()
         if actions[1].button("複製", key=f"{key_prefix}_copy_{rec.get('record_id')}"):
             load_into_form(actor, rec, as_copy=True)
-            st.session_state["travel_page"] = "new"
             st.rerun()
         pdf_bytes = _build_pdf(actor, rec)
         actions[2].download_button("下載", data=pdf_bytes, file_name=f"出差報帳_{rec.get('record_id') or 'preview'}.pdf", mime="application/pdf", key=f"{key_prefix}_dl_{rec.get('record_id')}")
