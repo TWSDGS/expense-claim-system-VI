@@ -41,7 +41,6 @@ from sync_engine import build_master_dataframe, sync_pending_events
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
-EXPENSE_ATTACHMENTS_ROOT_URL = "https://drive.google.com/drive/folders/1Hh6JFu62PPVU6rCcQ5bV6NEh0VsGaEcv?usp=sharing"
 
 
 EXPENSE_WIDGET_KEYS = {
@@ -392,37 +391,54 @@ def _queue_and_try_sync_expense(actor: Actor, operation: str, payload: Dict[str,
         return False, str(exc)
 
 def load_records_cloud_or_backup(actor: Actor, status: Optional[str] = None) -> Tuple[pd.DataFrame, str]:
-    df, report = _load_expense_master(actor, force_refresh=False)
-    source = str(report.get("source") or "empty")
-    out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
-    if not out.empty:
-        out = out.fillna("")
-        if "status" not in out.columns:
-            out["status"] = "draft"
-        out["status"] = out["status"].astype(str).str.lower()
-        if status == "draft":
-            out = out[out["status"].isin(["draft", "deleted"])].copy()
+    try:
+        df = get_api().records_df(actor=actor, status=status, owner_only=False).fillna("")
+        local_rows = load_local_expense_drafts(actor.email)
+        if local_rows:
+            local_df = pd.DataFrame(local_rows).fillna("")
+            if not df.empty:
+                if status:
+                    local_df = local_df[local_df.get("status", "").astype(str).str.lower() == status]
+                df = pd.concat([df, local_df], ignore_index=True).fillna("")
+                df = df.drop_duplicates(subset=["record_id"], keep="last") if "record_id" in df.columns else df
+            elif status == "draft":
+                df = local_df
+                return df.fillna(""), "local"
+        if status is None:
+            df_copy = df.copy().fillna("")
+            if not df_copy.empty:
+                if "status" not in df_copy.columns:
+                    df_copy["status"] = "draft"
+                status_series = df_copy["status"].astype(str).str.lower()
+                draft_cloud = df_copy[status_series.isin(["draft", "deleted"])].copy()
+                submitted_cloud = df_copy[status_series.isin(["submitted", "void"])].copy()
+            else:
+                draft_cloud = pd.DataFrame()
+                submitted_cloud = pd.DataFrame()
+            save_cloud_backup_excel({"申請列表": submitted_cloud, "草稿列表": draft_cloud})
         elif status == "submitted":
-            out = out[out["status"].isin(["submitted", "void"])].copy()
-        elif status:
-            out = out[out["status"] == str(status).strip().lower()].copy()
-        if "record_id" in out.columns:
-            out = out.drop_duplicates(subset=["record_id"], keep="last")
-
-    if status is None:
-        df_copy = out.copy()
-        if not df_copy.empty and "status" not in df_copy.columns:
-            df_copy["status"] = "draft"
-        status_series = df_copy.get("status", pd.Series(dtype=str)).astype(str).str.lower() if not df_copy.empty else pd.Series(dtype=str)
-        draft_cloud = df_copy[status_series.isin(["draft", "deleted"])].copy() if not df_copy.empty else pd.DataFrame()
-        submitted_cloud = df_copy[status_series.isin(["submitted", "void"])].copy() if not df_copy.empty else pd.DataFrame()
-        save_cloud_backup_excel({"申請列表": submitted_cloud, "草稿列表": draft_cloud})
-    elif status == "submitted":
-        save_cloud_backup_excel({"申請列表": out})
-    elif status == "draft":
-        save_cloud_backup_excel({"草稿列表": out})
-
-    return out, source
+            save_cloud_backup_excel({"申請列表": df})
+        elif status == "draft":
+            save_cloud_backup_excel({"草稿列表": df})
+        return df, "cloud"
+    except Exception:
+        if status in {"draft", None}:
+            local_rows = load_local_expense_drafts(actor.email)
+            if local_rows:
+                df_local = pd.DataFrame(local_rows).fillna("")
+                if status:
+                    status_series = df_local.get("status", pd.Series(dtype=str)).astype(str).str.lower()
+                    df_local = df_local[status_series == status]
+                return df_local, "local"
+        if status == "submitted":
+            df = load_backup_sheet_df("申請列表")
+            if df.empty:
+                df = load_backup_sheet_df("申請表單")
+        else:
+            df = load_backup_sheet_df("草稿列表")
+        if not df.empty:
+            return df.fillna(""), "backup"
+        return pd.DataFrame(), "empty"
 
 
 def refresh_runtime_cache(actor: Actor) -> None:
@@ -676,6 +692,7 @@ def default_form(actor: Actor, defaults: Dict[str, Any]) -> Dict[str, Any]:
         "note_public": defaults.get("default_note_public", "憑證正本請黏貼於此頁下方；會議請填寫出席人員於用途說明"),
         "remarks_internal": "",
         "owner_name": actor.name,
+        "filler_name": actor.name,  # 初始填表人
         "user_email": actor.email,
         "attachment_files": [],
         "signature_file": {},
@@ -714,6 +731,9 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     st.session_state.setdefault(keys["remarks_internal"], str(d.get("remarks_internal", "")))
     plan_opts = option_values(grouped_options, "plan_code")
     plan_val = str(d.get("plan_code", "")).strip()
+    # If plan_val is not in options but has a value, add it to preserve it
+    if plan_val and plan_val not in plan_opts:
+        plan_opts = [plan_val] + plan_opts
     st.session_state.setdefault(keys["plan_code"], plan_val if plan_val in plan_opts else "其他")
     st.session_state.setdefault(keys["plan_code_other"], "" if plan_val in plan_opts else plan_val)
     actor_name = str(st.session_state.get("actor_name", "")).strip()
@@ -729,6 +749,14 @@ def _set_widget_defaults(form_data: Dict[str, Any], grouped_options: Dict[str, L
     
     emp_name = str(d.get("employee_name", "")).strip() or actor_name
     emp_no = str(d.get("employee_no", "")).strip() or actor_employee_no
+    
+    # If emp_name is not in options but has a value, add it to preserve it
+    if emp_name and emp_name not in emp_name_opts:
+        emp_name_opts = [emp_name] + emp_name_opts
+    
+    # If emp_no is not in options but has a value, add it to preserve it
+    if emp_no and emp_no not in emp_no_opts:
+        emp_no_opts = [emp_no] + emp_no_opts
     
     first_emp_name = emp_name_opts[0] if emp_name_opts else ""
     first_emp_no = emp_no_opts[0] if emp_no_opts else ""
@@ -800,6 +828,7 @@ def load_record_into_form(record: Dict[str, Any], actor: Actor, grouped_options:
         "note_public": record.get("note_public", ""),
         "remarks_internal": record.get("remarks_internal", ""),
         "owner_name": record.get("owner_name", actor.name),
+        "filler_name": record.get("filler_name") or record.get("owner_name") or actor.name, # 載入時保留原始填表人
         "user_email": record.get("user_email", actor.email),
         "attachment_files": record.get("attachment_files", []),
         "signature_file": record.get("signature_file", {}),
@@ -815,6 +844,7 @@ def copy_record_into_form(record: Dict[str, Any], actor: Actor, grouped_options:
     copied["record_id"] = ""
     copied["form_date"] = date.today().isoformat()
     copied["owner_name"] = actor.name
+    copied["filler_name"] = actor.name # 複製時，新表單的填表人為當前操作者
     copied["user_email"] = actor.email
     for k in ["status", "created_at", "updated_at", "modified_at", "submitted_at", "deleted_at", "voided_at"]:
         copied.pop(k, None)
@@ -974,6 +1004,7 @@ def _current_payload(actor: Actor, form_data: Dict[str, Any], grouped_options: D
         "note_public": str(st.session_state.get(keys["note_public"], "")),
         "remarks_internal": str(st.session_state.get(keys["remarks_internal"], "")),
         "owner_name": actor.name,
+        "filler_name": form_data.get("filler_name") or actor.name, # 儲存時保留原始填表人
         "user_email": actor.email,
         "attachment_files": form_data.get("attachment_files", []),
         "signature_file": form_data.get("signature_file", {}),
@@ -1282,7 +1313,7 @@ def _payment_target_text(rec: Dict[str, Any]) -> str:
 
 
 def _owner_text(rec: Dict[str, Any]) -> str:
-    return str(rec.get("owner_name") or rec.get("employee_name") or rec.get("created_by_name") or "").strip()
+    return str(rec.get("filler_name") or rec.get("owner_name") or rec.get("employee_name") or rec.get("created_by_name") or "").strip()
 
 
 def _record_to_pdf_payload(rec: Dict[str, Any], actor: Actor) -> Dict[str, Any]:
@@ -1311,6 +1342,7 @@ def _record_to_pdf_payload(rec: Dict[str, Any], actor: Actor) -> Dict[str, Any]:
     payload["amount_total"] = safe_int(payload.get("amount_total"))
     payload["amount_untaxed"] = safe_int(payload.get("amount_untaxed"))
     payload["owner_name"] = payload.get("owner_name") or actor.name
+    payload["filler_name"] = payload.get("filler_name") or payload.get("owner_name") or actor.name
     payload["user_email"] = payload.get("user_email") or actor.email
     return payload
 
